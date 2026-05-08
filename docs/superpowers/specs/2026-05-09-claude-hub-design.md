@@ -1,8 +1,9 @@
 # Claude Hub — Design Spec
 
 **Date:** 2026-05-09
-**Status:** Draft, pending user review
+**Status:** Approved
 **Owner:** Kuba Curik (curik@animato.cz)
+**License:** Apache 2.0
 
 ## 1. Summary
 
@@ -383,10 +384,12 @@ Rules:
 
 3. **Daemon ahead of hub schema**: WSS handshake exchanges versions; hub rejects incompatible major versions. Strict semver for the WSS protocol itself.
 
-4. **License**: MIT, Apache 2.0, or AGPL? Decision before first public release.
+4. **Branding and domain**: product name and whether to use `claude-hub.io`, `clamp.dev`, or another. Anthropic owns the "Claude" mark; phrase as "... for Claude Code" to stay safe.
 
-5. **Branding and domain**: product name and whether to use `claude-hub.io`, `clamp.dev`, or another. Anthropic owns the "Claude" mark; phrase as "... for Claude Code" to stay safe.
+5. **Future signatures**: not in MVP, but reserve `manifest.signatures[]` so Sigstore can be added without a schema break.
 
-6. **Future signatures**: not in MVP, but reserve `manifest.signatures[]` so Sigstore can be added without a schema break.
+6. **Backup / export**: ship `claude-hub backup` CLI (tar.gz of `pg_dump` + `mc mirror` of MinIO) or document the steps.
 
-7. **Backup / export**: ship `claude-hub backup` CLI (tar.gz of `pg_dump` + `mc mirror` of MinIO) or document the steps.
+## 11. Resolved decisions
+
+- **License**: Apache 2.0 — permissive, includes patent grant, is the de facto standard for developer infrastructure tools, and removes adoption friction for companies. Captured in `LICENSE` at repo root and `SPDX-License-Identifier: Apache-2.0` headers in source files.
