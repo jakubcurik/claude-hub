@@ -3659,3 +3659,182 @@ Použij tento checklist po dokončení všech tasků (a author tohoto plánu už
 
 4. **Open questions:**
    - Invite token generuje audit log, ale nemá vlastní tabulku `invitations` — je to vědomé MVP zjednodušení; rozšíření přijde ve v1.1 (z roadmapy). Pokud reviewer chce striktní invitations table už v MVP, upgrade plánu.
+
+---
+
+## Addendum (post user-approval, 2026-05-09)
+
+The "invitations" open question above is **resolved** per the spec's `## 11. Resolved decisions` section: invitations get a dedicated table, not an audit-log token. Add the following two tasks after Task 16 (and before the dashboard tasks) and renumber the integration/E2E tests accordingly.
+
+### Task 16b: Invitations schema, migration, and DTO
+
+**Files:**
+- Create: `apps/hub-server/src/db/schema/invitations.ts`
+- Create: `ops/migrations/0002_invitations.sql` (drizzle-kit generated)
+- Modify: `packages/shared-types/src/invitations.ts`
+- Test: `apps/hub-server/src/db/schema/invitations.test.ts`
+
+- [ ] **Step 1: Write failing schema test**
+
+```ts
+// SPDX-License-Identifier: Apache-2.0
+import { describe, it, expect } from 'vitest';
+import { invitations } from './invitations';
+
+describe('invitations schema', () => {
+  it('has unique 256-bit token, optional email, role default member, expiry, redemption fields', () => {
+    expect(invitations.token.notNull).toBe(true);
+    expect(invitations.role.default).toBe('member');
+    expect(invitations.expiresAt.notNull).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify FAIL**
+
+```
+pnpm --filter hub-server test db/schema/invitations
+```
+
+Expected: `Cannot find module './invitations'`.
+
+- [ ] **Step 3: Implement schema**
+
+```ts
+// SPDX-License-Identifier: Apache-2.0
+import { pgTable, text, timestamp, uuid, index } from 'drizzle-orm/pg-core';
+import { users } from './users';
+
+export const invitations = pgTable('invitations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  token: text('token').notNull().unique(),
+  email: text('email'),
+  role: text('role', { enum: ['admin', 'member'] }).notNull().default('member'),
+  invitedByUserId: uuid('invited_by_user_id').notNull().references(() => users.id),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  redeemedAt: timestamp('redeemed_at', { withTimezone: true }),
+  redeemedByUserId: uuid('redeemed_by_user_id').references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  byEmail: index('invitations_email_idx').on(t.email),
+  byExpires: index('invitations_expires_idx').on(t.expiresAt),
+}));
+```
+
+Add to `packages/shared-types/src/invitations.ts`:
+
+```ts
+// SPDX-License-Identifier: Apache-2.0
+export interface InvitationDTO {
+  id: string;
+  email: string | null;
+  role: 'admin' | 'member';
+  invitedByUserId: string;
+  expiresAt: string;
+  redeemedAt: string | null;
+  createdAt: string;
+}
+```
+
+- [ ] **Step 4: Generate migration**
+
+```
+pnpm --filter hub-server drizzle-kit generate --name invitations
+mv apps/hub-server/drizzle/*.sql ops/migrations/0002_invitations.sql
+```
+
+- [ ] **Step 5: Verify**
+
+```
+pnpm --filter hub-server test db/schema/invitations
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```
+git add apps/hub-server/src/db/schema/invitations.ts ops/migrations/0002_invitations.sql packages/shared-types/src/invitations.ts apps/hub-server/src/db/schema/invitations.test.ts
+git commit -m "feat(server): add invitations table for admin invite flow"
+```
+
+### Task 16c: Invitation endpoints + redemption
+
+**Files:**
+- Modify: `apps/hub-server/src/routes/users.ts` — change `POST /api/users/invite` to insert into `invitations` and return the invite link with `?token=…`.
+- Create: `apps/hub-server/src/routes/invitations.ts` — `GET /api/invitations/:token` (validate, return `{ email, role, expiresAt }`), `POST /api/invitations/:token/redeem` (consume token + create user; idempotent: second call returns `already_redeemed`).
+- Modify: `apps/hub-server/src/routes/auth.ts` — `register` accepts optional `inviteToken`; if present, validates and consumes; otherwise allowed only when 0 users exist (first-run wizard path).
+- Test: `apps/hub-server/test/integration/invitations.test.ts`
+
+- [ ] **Step 1: Write failing integration test**
+
+```ts
+// SPDX-License-Identifier: Apache-2.0
+import { describe, it, expect } from 'vitest';
+import { withTestServer } from './helpers';
+
+describe('invitations flow', () => {
+  it('admin creates invite, member redeems, second redeem fails', async () => {
+    await withTestServer(async (srv, db) => {
+      const adminCookie = await srv.loginAs('admin');
+      const inviteRes = await srv.fetch('/api/users/invite', {
+        method: 'POST',
+        headers: { cookie: adminCookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'new@team.tld', role: 'member' }),
+      });
+      const { token } = await inviteRes.json();
+
+      const detailRes = await srv.fetch(`/api/invitations/${token}`);
+      expect(detailRes.status).toBe(200);
+
+      const redeemRes = await srv.fetch(`/api/invitations/${token}/redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'longenoughpw1234', name: 'New User' }),
+      });
+      expect(redeemRes.status).toBe(201);
+
+      const replay = await srv.fetch(`/api/invitations/${token}/redeem`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'x', name: 'x' }),
+      });
+      expect(replay.status).toBe(409);
+      const body = await replay.json();
+      expect(body.code).toBe('already_redeemed');
+    });
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify FAIL**
+
+```
+pnpm --filter hub-server test test/integration/invitations
+```
+
+Expected: 404 on `/api/invitations/...`.
+
+- [ ] **Step 3: Implement routes (full code in repo, not shown for brevity in addendum — see `apps/hub-server/src/routes/invitations.ts`)**
+
+The route handlers must:
+1. Generate a 32-byte random token via `crypto.randomBytes(32).toString('base64url')`.
+2. Insert into `invitations` with `expires_at = now() + 7 days`.
+3. Validate token: not redeemed, not expired.
+4. On redeem: in a transaction, insert `users` row, set `redeemed_at = now()` and `redeemed_by_user_id = newUser.id`, write audit_log entries `invitation.created` / `invitation.redeemed`.
+5. Admin-only `DELETE /api/invitations/:id` sets `expires_at = now()` and writes audit `invitation.revoked`.
+
+- [ ] **Step 4: Run, verify PASS**
+
+```
+pnpm --filter hub-server test test/integration/invitations
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```
+git add apps/hub-server/src/routes/invitations.ts apps/hub-server/src/routes/users.ts apps/hub-server/src/routes/auth.ts apps/hub-server/test/integration/invitations.test.ts
+git commit -m "feat(server): invitation token table-backed flow with revocation"
+```

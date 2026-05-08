@@ -1016,7 +1016,7 @@ Expected: FAIL — package doesn't exist.
 export type WSSMessageType =
   | 'ping' | 'pong'
   | 'inventory.snapshot' | 'inventory.delta'
-  | 'job.install' | 'job.uninstall' | 'job.enable' | 'job.package'
+  | 'job.install' | 'job.uninstall' | 'job.toggle' | 'job.package'
   | 'job.result'
   | 'subscribe.local' | 'local.snapshot' | 'local.delta'
   | 'catalog.update';
@@ -1125,7 +1125,7 @@ const (
     TypeInventoryDelta   = "inventory.delta"
     TypeJobInstall       = "job.install"
     TypeJobUninstall     = "job.uninstall"
-    TypeJobEnable        = "job.enable"
+    TypeJobToggle        = "job.toggle"
     TypeJobPackage       = "job.package"
     TypeJobResult        = "job.result"
 )

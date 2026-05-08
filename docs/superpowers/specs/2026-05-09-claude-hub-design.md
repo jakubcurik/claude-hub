@@ -139,6 +139,15 @@ sessions (
   expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ
 )
 
+invitations (
+  id UUID PK, token TEXT UNIQUE, email TEXT,
+  role TEXT CHECK (role IN ('admin','member')) DEFAULT 'member',
+  invited_by_user_id UUID FK,
+  expires_at TIMESTAMPTZ, redeemed_at TIMESTAMPTZ,
+  redeemed_by_user_id UUID FK, created_at TIMESTAMPTZ
+)
+-- 256-bit single-use token, default TTL 7 days, admin-revocable
+
 daemons (
   id UUID PK, user_id UUID FK, hostname TEXT,
   os TEXT CHECK (os IN ('windows','macos','linux')),
@@ -378,18 +387,22 @@ Rules:
 
 ## 10. Open questions (for implementation phase)
 
-1. **Slug collisions**: a member already has a local skill `helper` and a teammate publishes `helper`. Proposal: hub-wide unique slugs, so the second publish fails with "slug taken"; on install, prompt the user that the local unpublished version will be overwritten.
+1. **Project-level scope detection**: MVP scans only user-level (`~/.claude/`). Project-level (`<repo>/.claude/`) lands in v1.2; how the daemon detects which project the user is currently working on (last-CWD heuristic vs. explicit `claude-hub project add` registration) is the open part.
 
-2. **Project-level plugins and `cwd`-aware daemon**: MVP scans only user-level (`~/.claude/`). Project-level (`<repo>/.claude/`) lands in v1.2; how the daemon detects which project the user is currently working on (last-CWD heuristic vs explicit `claude-hub project add` registration) is the open part.
-
-3. **Daemon ahead of hub schema**: WSS handshake exchanges versions; hub rejects incompatible major versions. Strict semver for the WSS protocol itself.
-
-4. **Branding and domain**: product name and whether to use `claude-hub.io`, `clamp.dev`, or another. Anthropic owns the "Claude" mark; phrase as "... for Claude Code" to stay safe.
-
-5. **Future signatures**: not in MVP, but reserve `manifest.signatures[]` so Sigstore can be added without a schema break.
-
-6. **Backup / export**: ship `claude-hub backup` CLI (tar.gz of `pg_dump` + `mc mirror` of MinIO) or document the steps.
+2. **Branding and domain**: the product is named **Claude Hub**. Whether to register `claude-hub.io`, `clamp.dev`, or another domain is deferred. Anthropic owns the "Claude" mark; the README and docs phrase the product as "self-hosted hub for Claude Code" to stay safe under fair use.
 
 ## 11. Resolved decisions
 
 - **License**: Apache 2.0 — permissive, includes patent grant, is the de facto standard for developer infrastructure tools, and removes adoption friction for companies. Captured in `LICENSE` at repo root and `SPDX-License-Identifier: Apache-2.0` headers in source files.
+
+- **Slug collisions**: hub-wide unique slugs. The second publish of a colliding slug fails with `slug_taken`. On install, the daemon prompts (or returns a confirmation requirement to the UI/CLI) before overwriting an existing local artifact.
+
+- **WSS protocol versioning**: the daemon and hub exchange protocol versions in the WSS handshake. The hub rejects incompatible major versions and instructs the daemon to upgrade. Strict semver for the WSS message protocol itself, separate from the agent binary version.
+
+- **`job.toggle` (not `job.enable`)**: the WSS message that flips the enabled flag is named `job.toggle` and carries `{ artifact_id, slug, enabled: bool }`. Only `plugin` artifacts accept it; other types respond with `not_supported_in_mvp`. Source of truth: `_implementation-contracts.md`.
+
+- **Invitations table**: invitations live in a dedicated `invitations` table with single-use 256-bit tokens, default TTL 7 days, and admin revocation (set `expires_at = now()`). Audit log records `invitation.created` / `invitation.redeemed` / `invitation.revoked` for traceability.
+
+- **Manifest signatures (forward-compatible)**: every `ArtifactManifest` reserves a `signatures: SignatureEntry[]` field — empty in MVP, populated by future Sigstore integration without a schema break. Server stores it, daemon ignores it for now.
+
+- **Backup / export**: ship `claude-hub backup` CLI (Plan 5) that produces `claude-hub-backup-<timestamp>.tar.gz` containing `pg_dump` of the hub database and a `mc mirror` of the MinIO bucket. `claude-hub restore <file>` reverses it. Documented in the admin guide.

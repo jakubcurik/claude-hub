@@ -62,7 +62,21 @@ CLAUDE_HOME=$HOME/.claude           # override for tests
 
 Names from spec section 5.1. Use `text` for IDs (UUID v7 generated server-side via `uuid` lib, predictable order). Timestamps `timestamp({ withTimezone: true, mode: 'date' })`.
 
-Tables: `users`, `sessions`, `daemons`, `artifacts`, `artifact_versions`, `install_events`, `audit_log`, plus `pairings` (ephemeral, TTL via `expires_at` + sweep job).
+Tables: `users`, `sessions`, `invitations`, `daemons`, `artifacts`, `artifact_versions`, `install_events`, `audit_log`, plus `pairings` (ephemeral, TTL via `expires_at` + sweep job).
+
+`invitations` schema:
+```
+invitations (
+  id UUID PK, token TEXT UNIQUE, email TEXT,
+  role TEXT CHECK (role IN ('admin','member')) DEFAULT 'member',
+  invited_by_user_id UUID FK,
+  expires_at TIMESTAMPTZ,
+  redeemed_at TIMESTAMPTZ,
+  redeemed_by_user_id UUID FK,
+  created_at TIMESTAMPTZ
+)
+```
+Tokens are 256-bit random, single-use, default TTL 7 days. Admin can revoke (set `expires_at = now()`).
 
 All migrations in `ops/migrations/` numbered `0001_init.sql`, `0002_*.sql`, …
 
@@ -115,7 +129,7 @@ Wire format: JSON, line-delimited (`{"type":"...","payload":{...},"id":"..."}`).
 **Hub → Daemon:**
 - `job.install`     `{ artifact_version_id, sha256, download_url }`
 - `job.uninstall`   `{ artifact_id }`
-- `job.enable`      `{ artifact_id, enabled: bool }` (jen plugin)
+- `job.toggle`      `{ artifact_id, slug, enabled: bool }` (jen plugin; non-plugin typy jsou odmítány s `not_supported_in_mvp`)
 - `job.package`     `{ slug, type, source_path }` — daemon má zabalit a uploadnout
 - `ping`
 

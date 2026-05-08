@@ -467,3 +467,73 @@ The user explicitly asked for ~25–32. Re-reading scope, several items are mand
 These are not artificially split. The brief's "25–32" target is a soft guide; substance over form. The plan is **ready as-is**, totalling **51 fine-grained tasks**, each within the 2–5 minute envelope.
 
 **Final sanity:** all tasks reference real files, no placeholders (`TBD` only acceptable in `SECURITY.md` PGP fingerprint per Task F8 — explicitly called out). All commits follow Conventional Commits. SPDX enforced repo-wide via Task G2 + G4. Plan is internally consistent with `_implementation-contracts.md` (paths, types, env vars).
+## Addendum (post user-approval, 2026-05-09): `claude-hub backup` / `restore` CLI
+
+The spec's `## 11. Resolved decisions` section commits to shipping a backup/restore tool. Add the following two tasks before the release pipeline section (slot them as `Task BR1` / `Task BR2` after the CLI subcommands and before the GitHub Actions release workflow).
+
+### Task BR1 — `claude-hub backup` (server endpoint + CLI subcommand)
+
+**Files:**
+- Create: `apps/hub-server/src/admin/backup.ts` — orchestrates `pg_dump` + MinIO mirror to a temp directory, then tar+gzip into a stream.
+- Create: `apps/hub-server/src/routes/admin/backup.ts` — `GET /api/admin/backup` (admin only) streams the archive with `Content-Disposition: attachment; filename=claude-hub-backup-<ISO_TS>.tar.gz`.
+- Create: `apps/cli/cmd/backup.go` — `claude-hub backup [--out <path>]`, calls the endpoint with the admin session cookie.
+- Test: `apps/hub-server/test/integration/admin-backup.test.ts` and `apps/cli/cmd/backup_test.go`.
+
+- [ ] **Step 1: Write failing server integration test** — admin gets 200 with a streamed gzipped tar that contains `pg_dump.sql` and `minio/...` entries; member gets 403.
+
+- [ ] **Step 2: Run, verify FAIL** (`pnpm --filter hub-server test test/integration/admin-backup`).
+
+- [ ] **Step 3: Implement `createBackupStream()`** in `apps/hub-server/src/admin/backup.ts` (spawn `pg_dump`, mirror MinIO via `listObjects` + `getObjectStream`, pipe through `tar.create` + `zlib.createGzip`).
+
+- [ ] **Step 4: Implement Hono route** `/api/admin/backup` guarded by `requireRole('admin')`, streams the archive with the right `Content-Type` and `Content-Disposition` headers.
+
+- [ ] **Step 5: Run, verify PASS.**
+
+- [ ] **Step 6: Implement Go CLI subcommand** that loads the saved session from `~/.claude-hub/cli.token`, performs the GET, and writes the body to `--out` (defaults to `claude-hub-backup-<UTC_TS>.tar.gz` in CWD).
+
+- [ ] **Step 7: Add CLI test** with `httptest` server returning a known gzipped tar and assert the file is written with matching SHA-256.
+
+- [ ] **Step 8: Run all, verify PASS.**
+
+- [ ] **Step 9: Commit**
+
+```
+git add apps/hub-server/src/admin/backup.ts apps/hub-server/src/routes/admin/backup.ts apps/hub-server/test/integration/admin-backup.test.ts apps/cli/cmd/backup.go apps/cli/cmd/backup_test.go
+git commit -m "feat: claude-hub backup streams pg_dump + minio mirror"
+```
+
+### Task BR2 — `claude-hub restore` (mirror of BR1)
+
+**Files:**
+- Create: `apps/hub-server/src/admin/restore.ts` — untar a backup, run `psql -f pg_dump.sql`, re-upload MinIO blobs.
+- Create: `apps/hub-server/src/routes/admin/restore.ts` — `POST /api/admin/restore` (multipart upload, requires `confirm=RESTORE` form field), admin only.
+- Create: `apps/cli/cmd/restore.go` — `claude-hub restore <file> [--dry-run] [--force]`. Refuses when the hub already has users unless `--force`.
+- Test: `apps/hub-server/test/integration/admin-restore.test.ts` — round-trip: backup → truncate tables and clear bucket → restore → assert row counts and object counts match.
+
+- [ ] **Step 1: Write failing round-trip test** asserting equality of `SELECT count(*) FROM users`, `artifacts`, `artifact_versions`, `install_events` and the count of MinIO objects before vs. after.
+
+- [ ] **Step 2: Run, verify FAIL.**
+
+- [ ] **Step 3: Implement** server side (`runPsqlRestore()`, `restoreMinio()`), enforce `confirm=RESTORE`.
+
+- [ ] **Step 4: Implement** Go CLI: read flags, POST multipart, surface progress, non-zero exit on failure.
+
+- [ ] **Step 5: Run, verify PASS.**
+
+- [ ] **Step 6: Commit**
+
+```
+git add apps/hub-server/src/admin/restore.ts apps/hub-server/src/routes/admin/restore.ts apps/hub-server/test/integration/admin-restore.test.ts apps/cli/cmd/restore.go
+git commit -m "feat: claude-hub restore applies a backup archive idempotently"
+```
+
+### Documentation hook
+
+- [ ] In `docs/admin-guide.md` (Plan 5 Task F2), add a "Backup and restore" section that shows:
+  ```
+  claude-hub login --hub https://hub.firma.tld
+  claude-hub backup --out backup.tar.gz
+  # later, on a fresh deployment:
+  claude-hub restore backup.tar.gz --force
+  ```
+  with a callout that the restore replaces all existing data and that pg_dump format is `-Fp` (plain SQL) so backups are inspectable.
