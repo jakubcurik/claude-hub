@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+.next/
+coverage/
+playwright-report/
+test-results/
+ops/migrations/*.sql
