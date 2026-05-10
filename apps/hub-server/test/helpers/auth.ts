@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
-import { users } from '../../src/db/schema.js';
+import {
+  artifacts as artifactsTable,
+  artifactVersions as versionsTable,
+  users,
+} from '../../src/db/schema.js';
 import { hashPassword } from '../../src/auth/password.js';
 import { createSession } from '../../src/auth/session.js';
 import type { Db } from '../../src/db/client.js';
@@ -81,4 +85,19 @@ export async function seedArtifact(
   }
   const body = (await r.json()) as { artifactId: string; versionId: string };
   return { artifactId: body.artifactId, versionId: body.versionId, sha256 };
+}
+
+// Test-only direct DB update — Task 11's POST /yank endpoint will exercise the route path.
+export async function yankArtifactVersions(
+  db: Db,
+  slug: string,
+  versions: string[],
+): Promise<void> {
+  const a = await db.select().from(artifactsTable).where(eq(artifactsTable.slug, slug)).limit(1);
+  const artifactId = a[0]?.id;
+  if (!artifactId) throw new Error(`yankArtifactVersions: slug ${slug} not found`);
+  await db
+    .update(versionsTable)
+    .set({ deprecated: true })
+    .where(and(eq(versionsTable.artifactId, artifactId), inArray(versionsTable.version, versions)));
 }

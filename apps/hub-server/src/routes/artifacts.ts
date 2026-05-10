@@ -190,5 +190,28 @@ export function buildArtifactsRoutes(db: Db) {
     return c.json({ items: rows, page, limit, total });
   });
 
+  app.get('/:slug', requireUser(db), async (c) => {
+    let slug: string;
+    try {
+      slug = slugSchema.parse(c.req.param('slug'));
+    } catch (e) {
+      return c.json<ApiError>(
+        { code: 'invalid_input', message: e instanceof Error ? e.message : 'invalid slug' },
+        400,
+      );
+    }
+    const aRows = await db.select().from(artifacts).where(eq(artifacts.slug, slug)).limit(1);
+    const a = aRows[0];
+    if (!a) {
+      return c.json<ApiError>({ code: 'not_found', message: 'artifact not found' }, 404);
+    }
+    const versions = await db
+      .select()
+      .from(artifactVersions)
+      .where(eq(artifactVersions.artifactId, a.id))
+      .orderBy(desc(artifactVersions.publishedAt));
+    return c.json({ artifact: a, versions });
+  });
+
   return app;
 }
