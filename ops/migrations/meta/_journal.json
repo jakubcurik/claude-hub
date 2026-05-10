@@ -15,6 +15,13 @@
       "when": 1778406239427,
       "tag": "0001_nosy_cerebro",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778976000000,
+      "tag": "0002_daemons_pairings",
+      "breakpoints": true
     }
   ]
 }
