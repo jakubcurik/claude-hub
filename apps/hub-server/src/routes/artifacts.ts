@@ -10,7 +10,7 @@ import { artifacts, artifactVersions, auditLog } from '../db/schema.js';
 import { requireUser, type AuthEnv } from '../middleware/auth.js';
 import { artifactTypeSchema, semverSchema, sha256Schema, slugSchema } from '../lib/validators.js';
 import { artifactManifestSchema, type ArtifactManifest } from '../lib/manifest-schema.js';
-import { manifestKey, putArtifactBlob, storageKey } from '../storage/minio.js';
+import { manifestKey, presignDownload, putArtifactBlob, storageKey } from '../storage/minio.js';
 
 const listQuerySchema = z.object({
   type: artifactTypeSchema.optional(),
@@ -236,6 +236,35 @@ export function buildArtifactsRoutes(db: Db) {
       return c.json<ApiError>({ code: 'not_found', message: 'version not found' }, 404);
     }
     return c.json(row.artifact_versions);
+  });
+
+  app.get('/:slug/versions/:version/download', requireUser(db), async (c) => {
+    let slug: string;
+    let version: string;
+    try {
+      slug = slugSchema.parse(c.req.param('slug'));
+      version = semverSchema.parse(c.req.param('version'));
+    } catch (e) {
+      return c.json<ApiError>(
+        { code: 'invalid_input', message: e instanceof Error ? e.message : 'invalid params' },
+        400,
+      );
+    }
+    const rows = await db
+      .select({
+        key: artifactVersions.storageKey,
+        sha: artifactVersions.sha256,
+      })
+      .from(artifactVersions)
+      .innerJoin(artifacts, eq(artifacts.id, artifactVersions.artifactId))
+      .where(and(eq(artifacts.slug, slug), eq(artifactVersions.version, version)))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      return c.json<ApiError>({ code: 'not_found', message: 'version not found' }, 404);
+    }
+    const url = await presignDownload(row.key, 300);
+    return c.json({ downloadUrl: url, sha256: row.sha });
   });
 
   return app;
