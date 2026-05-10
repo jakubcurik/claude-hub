@@ -35,6 +35,23 @@ export async function loginAs(
   return `hub_session=${token}`;
 }
 
+export async function promoteToAdmin(db: Db, email: string): Promise<void> {
+  const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  if (existing[0]) {
+    await db.update(users).set({ role: 'admin' }).where(eq(users.id, existing[0].id));
+  } else {
+    const userId = uuidv7();
+    const hash = await hashPassword(SHARED_PASSWORD);
+    await db.insert(users).values({
+      id: userId,
+      email,
+      passwordHash: hash,
+      name: email.split('@')[0] ?? 'admin',
+      role: 'admin',
+    });
+  }
+}
+
 export interface SeedArtifactOpts {
   slug: string;
   type: 'skill' | 'plugin' | 'command' | 'agent';
