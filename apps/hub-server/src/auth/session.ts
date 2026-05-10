@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { randomBytes } from 'node:crypto';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, type InferSelectModel } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import type { Db } from '../db/client.js';
 import { sessions } from '../db/schema.js';
@@ -22,12 +22,7 @@ export async function createSession(db: Db, userId: string): Promise<string> {
   return token;
 }
 
-export interface SessionRow {
-  id: string;
-  userId: string;
-  token: string;
-  expiresAt: Date;
-}
+export type SessionRow = InferSelectModel<typeof sessions>;
 
 export async function lookupSession(db: Db, token: string): Promise<SessionRow | null> {
   const rows = await db
