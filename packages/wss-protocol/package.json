@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./messages": {
+      "types": "./dist/messages.d.ts",
+      "import": "./dist/messages.js"
     }
   },
   "scripts": {
@@ -20,5 +24,8 @@
   },
   "devDependencies": {
     "vitest": "^2.1.3"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
   }
 }
