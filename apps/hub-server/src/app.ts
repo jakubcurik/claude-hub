@@ -8,6 +8,7 @@ import type { MinioContext } from './storage/minio.js';
 import { buildAuthRoutes } from './routes/auth.js';
 import { buildSetupRoutes } from './routes/setup.js';
 import { buildUsersRoutes } from './routes/users.js';
+import { buildInvitationsRoutes } from './routes/invitations.js';
 
 export interface AppOptions {
   db?: Db;
@@ -53,6 +54,10 @@ export function buildApp(opts: AppOptions = {}) {
     app.route(
       '/api/users',
       buildUsersRoutes(opts.db, { publicUrl: opts.publicUrl ?? 'http://localhost:3000' }),
+    );
+    app.route(
+      '/api/invitations',
+      buildInvitationsRoutes(opts.db, { secureCookie: opts.secureCookie ?? false }),
     );
   }
 

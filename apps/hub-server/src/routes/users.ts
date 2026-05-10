@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
+import { v7 as uuidv7 } from 'uuid';
 import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from '../db/client.js';
-import { users } from '../db/schema.js';
+import { invitations, users } from '../db/schema.js';
 import { requireUser, requireRole, type AuthEnv } from '../middleware/auth.js';
 import { writeAudit } from '../audit.js';
 import { toUserDTO } from './_user-dto.js';
@@ -15,6 +16,7 @@ const InviteSchema = z.object({
     .string()
     .email()
     .transform((s) => s.toLowerCase().trim()),
+  role: z.enum(['admin', 'member']).default('member'),
 });
 const PatchSchema = z.object({
   role: z.enum(['admin', 'member']).optional(),
@@ -37,14 +39,26 @@ export function buildUsersRoutes(db: Db, opts: { publicUrl: string }) {
       const err: ApiError = { code: 'validation_error', message: 'Invalid body' };
       return c.json(err, 400);
     }
-    const token = randomBytes(24).toString('base64url');
+    const id = uuidv7();
+    const token = randomBytes(32).toString('base64url');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await db.insert(invitations).values({
+      id,
+      token,
+      email: parsed.data.email,
+      role: parsed.data.role,
+      invitedByUserId: c.var.user.id,
+      expiresAt,
+    });
     await writeAudit(db, {
       actorUserId: c.var.user.id,
-      action: 'user.invite',
-      payload: { email: parsed.data.email, token },
+      action: 'invitation.created',
+      targetType: 'invitation',
+      targetId: id,
+      payload: { email: parsed.data.email, role: parsed.data.role },
     });
     const inviteUrl = `${opts.publicUrl}/register?token=${token}&email=${encodeURIComponent(parsed.data.email)}`;
-    return c.json({ inviteUrl, expiresInDays: 7 }, 201);
+    return c.json({ id, token, inviteUrl, expiresAt: expiresAt.toISOString() }, 201);
   });
 
   app.patch('/:id', async (c) => {
