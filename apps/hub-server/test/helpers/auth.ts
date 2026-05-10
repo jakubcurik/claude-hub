@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { users } from '../../src/db/schema.js';
 import { hashPassword } from '../../src/auth/password.js';
 import { createSession } from '../../src/auth/session.js';
 import type { Db } from '../../src/db/client.js';
+import type { buildApp } from '../../src/app.js';
 
 const SHARED_PASSWORD = 'seed-password-1234';
 
@@ -27,4 +29,56 @@ export async function loginAs(
   }
   const token = await createSession(db, userId);
   return `hub_session=${token}`;
+}
+
+export interface SeedArtifactOpts {
+  slug: string;
+  type: 'skill' | 'plugin' | 'command' | 'agent';
+  description: string;
+  version: string;
+  fileBytes?: Buffer;
+}
+
+export interface SeededArtifact {
+  artifactId: string;
+  versionId: string;
+  sha256: string;
+}
+
+export async function seedArtifact(
+  app: ReturnType<typeof buildApp>,
+  cookie: string,
+  opts: SeedArtifactOpts,
+): Promise<SeededArtifact> {
+  const fileBytes = opts.fileBytes ?? Buffer.from(`seed-${opts.slug}-${opts.version}`);
+  const sha256 = createHash('sha256').update(fileBytes).digest('hex');
+  const form = new FormData();
+  form.set('slug', opts.slug);
+  form.set('type', opts.type);
+  form.set('version', opts.version);
+  form.set('description', opts.description);
+  form.set('sha256', sha256);
+  form.set(
+    'manifest',
+    JSON.stringify({
+      schemaVersion: 1,
+      name: opts.slug,
+      type: opts.type,
+      description: opts.description,
+      typeMeta: {},
+    }),
+  );
+  form.set('file', new Blob([fileBytes], { type: 'application/gzip' }), `${opts.slug}.tar.gz`);
+
+  const r = await app.request('/api/artifacts/upload', {
+    method: 'POST',
+    headers: { cookie },
+    body: form,
+  });
+  if (r.status !== 201) {
+    const body = await r.text();
+    throw new Error(`seedArtifact failed: ${r.status} ${body}`);
+  }
+  const body = (await r.json()) as { artifactId: string; versionId: string };
+  return { artifactId: body.artifactId, versionId: body.versionId, sha256 };
 }

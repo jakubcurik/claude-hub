@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, ilike, isNull, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { v7 as uuidv7 } from 'uuid';
+import { z } from 'zod';
 import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from '../db/client.js';
 import { artifacts, artifactVersions, auditLog } from '../db/schema.js';
@@ -10,6 +11,13 @@ import { requireUser, type AuthEnv } from '../middleware/auth.js';
 import { artifactTypeSchema, semverSchema, sha256Schema, slugSchema } from '../lib/validators.js';
 import { artifactManifestSchema, type ArtifactManifest } from '../lib/manifest-schema.js';
 import { manifestKey, putArtifactBlob, storageKey } from '../storage/minio.js';
+
+const listQuerySchema = z.object({
+  type: artifactTypeSchema.optional(),
+  q: z.string().min(1).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
 
 type ParsedUpload =
   | {
@@ -131,6 +139,55 @@ export function buildArtifactsRoutes(db: Db) {
       // TODO(plan-3-t17): broadcast catalog.update via gateway
       return c.json({ artifactId, versionId }, 201);
     });
+  });
+
+  app.get('/', requireUser(db), async (c) => {
+    const params = Object.fromEntries(new URL(c.req.url).searchParams);
+    let parsed: z.infer<typeof listQuerySchema>;
+    try {
+      parsed = listQuerySchema.parse(params);
+    } catch (e) {
+      return c.json<ApiError>(
+        { code: 'invalid_input', message: e instanceof Error ? e.message : 'invalid query' },
+        400,
+      );
+    }
+    const { type, q, page, limit } = parsed;
+
+    const conds = [isNull(artifacts.archivedAt)];
+    if (type) conds.push(eq(artifacts.type, type));
+    if (q) conds.push(ilike(artifacts.description, `%${q}%`));
+    const where = and(...conds);
+
+    const countRows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(artifacts)
+      .where(where);
+    const total = countRows[0]?.count ?? 0;
+
+    const rows = await db
+      .select({
+        id: artifacts.id,
+        slug: artifacts.slug,
+        type: artifacts.type,
+        description: artifacts.description,
+        ownerUserId: artifacts.ownerUserId,
+        createdAt: artifacts.createdAt,
+        archivedAt: artifacts.archivedAt,
+        latestVersion: sql<string | null>`(
+          SELECT version FROM ${artifactVersions} av
+          WHERE av.artifact_id = ${artifacts.id} AND av.deprecated = false
+          ORDER BY string_to_array(av.version, '.')::int[] DESC
+          LIMIT 1
+        )`,
+      })
+      .from(artifacts)
+      .where(where)
+      .orderBy(desc(artifacts.createdAt))
+      .limit(limit)
+      .offset((page - 1) * limit);
+
+    return c.json({ items: rows, page, limit, total });
   });
 
   return app;
