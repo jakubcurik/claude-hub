@@ -31,6 +31,12 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// Version is the agent's reported version. Overridable at build time via -ldflags.
+var Version = "0.1.0-dev"
+
+// AgentVersion returns the agent version string.
+func (c *Config) AgentVersion() string { return Version }
+
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
