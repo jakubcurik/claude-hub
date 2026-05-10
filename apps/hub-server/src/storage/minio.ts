@@ -28,7 +28,7 @@ export function createMinioClient(cfg: MinioConfig): MinioContext {
     client,
     bucket: cfg.bucket,
     ping: async () => {
-      await client.listBuckets();
+      await client.bucketExists(cfg.bucket);
     },
   };
 }

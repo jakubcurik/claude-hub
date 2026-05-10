@@ -11,6 +11,10 @@ export interface MinioFixture {
   stop: () => Promise<void>;
 }
 
+// MinioContainer v10+ generates credentials at runtime; we read them via
+// getUsername()/getPassword() rather than hard-coding 'minioadmin'.
+// (The plan's helper used getEndpoint() + hard-coded creds; that API
+// only existed in older versions.)
 export async function startMinio(): Promise<MinioFixture> {
   const container = await new MinioContainer('minio/minio:RELEASE.2024-10-13T13-34-11Z').start();
   const endpoint = container.getConnectionUrl();
@@ -24,6 +28,11 @@ export async function startMinio(): Promise<MinioFixture> {
     accessKey,
     secretKey,
   });
+  try {
+    await client.makeBucket('claude-hub-artifacts');
+  } catch {
+    // ignore "bucket already exists"
+  }
   return {
     container,
     client,
