@@ -7,12 +7,14 @@ import type { Db } from './db/client.js';
 import type { MinioContext } from './storage/minio.js';
 import { buildAuthRoutes } from './routes/auth.js';
 import { buildSetupRoutes } from './routes/setup.js';
+import { buildUsersRoutes } from './routes/users.js';
 
 export interface AppOptions {
   db?: Db;
   minio?: MinioContext;
   skipDb?: boolean;
   secureCookie?: boolean;
+  publicUrl?: string;
 }
 
 export function buildApp(opts: AppOptions = {}) {
@@ -48,6 +50,10 @@ export function buildApp(opts: AppOptions = {}) {
   if (opts.db) {
     app.route('/api/auth', buildAuthRoutes(opts.db, { secureCookie: opts.secureCookie ?? false }));
     app.route('/api/setup', buildSetupRoutes(opts.db));
+    app.route(
+      '/api/users',
+      buildUsersRoutes(opts.db, { publicUrl: opts.publicUrl ?? 'http://localhost:3000' }),
+    );
   }
 
   app.notFound((c) => {
