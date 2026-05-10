@@ -53,10 +53,32 @@ export const pairings = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     pin: text('pin').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (t) => ({
     pinIdx: uniqueIndex('pairings_pin_idx').on(t.pin),
+  }),
+);
+
+export const daemons = pgTable(
+  'daemons',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    hostname: text('hostname').notNull(),
+    os: text('os', { enum: ['windows', 'macos', 'linux'] }).notNull(),
+    agentVersion: text('agent_version').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    pairedAt: timestamp('paired_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    userIdx: index('daemons_user_id_idx').on(t.userId),
   }),
 );
 
