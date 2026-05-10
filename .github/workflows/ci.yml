@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm --filter shared-types test
+      - run: pnpm --filter dashboard test
+      - run: pnpm --filter dashboard build
+
+  hub-server:
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:dind
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter shared-types build
+      - run: pnpm --filter hub-server typecheck
+      - run: pnpm --filter hub-server test
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+
+  e2e:
+    needs: [node, hub-server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter shared-types build
+      - run: pnpm --filter hub-server build
+      - run: pnpm --filter dashboard build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm --filter e2e run test
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'

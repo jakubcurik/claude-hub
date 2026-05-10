@@ -1,8 +1,34 @@
+# Node
 node_modules/
+.pnpm-store/
 dist/
 build/
+.next/
+next-env.d.ts
+coverage/
+*.tsbuildinfo
+
+# Go
+apps/agent/bin/
+apps/cli/bin/
+*.exe
+*.test
+*.out
+
+# Env
 .env
 .env.local
-*.log
+.env.*.local
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Test artifacts
+playwright-report/
+test-results/

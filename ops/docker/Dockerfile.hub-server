@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+FROM node:22-alpine AS deps
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY apps/hub-server/package.json apps/hub-server/
+COPY packages/shared-types/package.json packages/shared-types/
+RUN pnpm install --frozen-lockfile
+
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/hub-server/node_modules ./apps/hub-server/node_modules
+COPY . .
+RUN pnpm --filter shared-types build && pnpm --filter hub-server build
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+COPY --from=build /app /app
+EXPOSE 3000
+CMD ["node", "apps/hub-server/dist/main.js"]
