@@ -5,6 +5,7 @@ import {
   check,
   index,
   jsonb,
+  pgEnum,
   pgTable,
   text,
   timestamp,
@@ -117,5 +118,74 @@ export const invitations = pgTable(
     tokenIdx: uniqueIndex('invitations_token_idx').on(t.token),
     emailIdx: index('invitations_email_idx').on(t.email),
     expiresIdx: index('invitations_expires_idx').on(t.expiresAt),
+  }),
+);
+
+export const artifactTypeEnum = pgEnum('artifact_type', ['skill', 'plugin', 'command', 'agent']);
+export const installStatusEnum = pgEnum('install_status', ['success', 'failed', 'rolled_back']);
+
+export const artifacts = pgTable(
+  'artifacts',
+  {
+    id: text('id').primaryKey(),
+    slug: text('slug').notNull().unique(),
+    type: artifactTypeEnum('type').notNull(),
+    description: text('description').notNull().default(''),
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    archivedAt: timestamp('archived_at', { withTimezone: true, mode: 'date' }),
+  },
+  (t) => ({
+    byType: index('artifacts_type_idx').on(t.type),
+    byOwner: index('artifacts_owner_idx').on(t.ownerUserId),
+  }),
+);
+
+export const artifactVersions = pgTable(
+  'artifact_versions',
+  {
+    id: text('id').primaryKey(),
+    artifactId: text('artifact_id')
+      .notNull()
+      .references(() => artifacts.id, { onDelete: 'cascade' }),
+    version: text('version').notNull(),
+    storageKey: text('storage_key').notNull(),
+    sha256: text('sha256').notNull(),
+    manifest: jsonb('manifest').notNull(),
+    publishedByUserId: text('published_by_user_id')
+      .notNull()
+      .references(() => users.id),
+    publishedAt: timestamp('published_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+    deprecated: boolean('deprecated').notNull().default(false),
+  },
+  (t) => ({
+    uqVersion: uniqueIndex('artifact_versions_artifact_version_uq').on(t.artifactId, t.version),
+    byPublishedAt: index('artifact_versions_published_at_idx').on(t.publishedAt),
+    manifestGin: index('artifact_versions_manifest_gin').using('gin', t.manifest),
+  }),
+);
+
+export const installEvents = pgTable(
+  'install_events',
+  {
+    id: text('id').primaryKey(),
+    daemonId: text('daemon_id')
+      .notNull()
+      .references(() => daemons.id),
+    artifactVersionId: text('artifact_version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    installedAt: timestamp('installed_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+    status: installStatusEnum('status').notNull(),
+  },
+  (t) => ({
+    byDaemon: index('install_events_daemon_idx').on(t.daemonId),
+    byVersion: index('install_events_version_idx').on(t.artifactVersionId),
   }),
 );
