@@ -6,6 +6,8 @@ import { v7 as uuidv7 } from 'uuid';
 import type { Db } from '../db/client.js';
 import { daemons, pairings } from '../db/schema.js';
 import { requireUser, type AuthEnv } from '../middleware/auth.js';
+import type { ConnectionManager } from '../ws/manager.js';
+import { connectionManager as defaultConnectionManager } from '../ws/manager.js';
 
 const PIN_TTL_MS = 5 * 60 * 1000;
 
@@ -27,7 +29,10 @@ function genPin(): string {
   return (n % 1_000_000).toString().padStart(6, '0');
 }
 
-export function buildDaemonsRoutes(db: Db) {
+export function buildDaemonsRoutes(
+  db: Db,
+  connections: ConnectionManager = defaultConnectionManager,
+) {
   const app = new Hono<AuthEnv>();
 
   app.post('/pair', requireUser(db), async (c) => {
@@ -74,6 +79,36 @@ export function buildDaemonsRoutes(db: Db) {
     });
 
     return c.json({ daemonId, deviceToken: tokenRaw });
+  });
+
+  app.get('/', requireUser(db), async (c) => {
+    const user = c.get('user');
+    const rows = await db.select().from(daemons).where(eq(daemons.userId, user.id));
+    return c.json({
+      daemons: rows.map((d) => ({
+        id: d.id,
+        hostname: d.hostname,
+        os: d.os,
+        agentVersion: d.agentVersion,
+        pairedAt: d.pairedAt.toISOString(),
+        lastSeenAt: d.lastSeenAt.toISOString(),
+        online: connections.isOnline(d.id),
+      })),
+    });
+  });
+
+  app.delete('/:id', requireUser(db), async (c) => {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const [existing] = await db
+      .select({ id: daemons.id })
+      .from(daemons)
+      .where(and(eq(daemons.id, id), eq(daemons.userId, user.id)))
+      .limit(1);
+    if (!existing) return c.json({ error: 'not_found' }, 404);
+    await db.delete(daemons).where(eq(daemons.id, id));
+    connections.disconnect(id);
+    return c.body(null, 204);
   });
 
   return app;
