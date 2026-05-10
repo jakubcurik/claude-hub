@@ -6,7 +6,12 @@ export type ApiErrorCode =
   | 'validation_error'
   | 'rate_limited'
   | 'conflict'
-  | 'internal_error';
+  | 'internal_error'
+  | 'invalid_input'
+  | 'unsupported_type'
+  | 'sha256_mismatch'
+  | 'slug_taken'
+  | 'version_exists';
 
 export interface ApiError {
   code: ApiErrorCode;
