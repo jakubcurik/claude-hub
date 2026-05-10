@@ -5,12 +5,15 @@ import { v7 as uuidv7 } from 'uuid';
 import {
   artifacts as artifactsTable,
   artifactVersions as versionsTable,
+  daemons,
   users,
 } from '../../src/db/schema.js';
 import { hashPassword } from '../../src/auth/password.js';
-import { createSession } from '../../src/auth/session.js';
+import { createSession, lookupSession } from '../../src/auth/session.js';
 import type { Db } from '../../src/db/client.js';
 import type { buildApp } from '../../src/app.js';
+import type { Gateway } from '../../src/ws/gateway.js';
+import { resolveJob } from '../../src/ws/jobs.js';
 
 const SHARED_PASSWORD = 'seed-password-1234';
 
@@ -102,6 +105,82 @@ export async function seedArtifact(
   }
   const body = (await r.json()) as { artifactId: string; versionId: string };
   return { artifactId: body.artifactId, versionId: body.versionId, sha256 };
+}
+
+export interface FakeWSLike {
+  sent: string[];
+  readyState: number;
+  send(data: string): void;
+}
+
+export interface FakeDaemonOpts {
+  online?: boolean;
+  hostname?: string;
+  os?: 'windows' | 'macos' | 'linux';
+}
+
+export interface FakePairing {
+  daemonId: string;
+  socket: FakeWSLike;
+  userId: string;
+}
+
+function makeFakeSocket(): FakeWSLike {
+  return {
+    sent: [],
+    readyState: 1,
+    send(data: string) {
+      this.sent.push(data);
+    },
+  };
+}
+
+export async function pairFakeDaemon(
+  db: Db,
+  cookie: string,
+  gw: Gateway,
+  opts: FakeDaemonOpts = {},
+): Promise<FakePairing> {
+  const token = cookie.replace(/^hub_session=/, '');
+  const session = await lookupSession(db, token);
+  if (!session) throw new Error('pairFakeDaemon: cookie has no valid session');
+  const userId = session.userId;
+
+  const daemonId = uuidv7();
+  await db.insert(daemons).values({
+    id: daemonId,
+    userId,
+    hostname: opts.hostname ?? 'fake-host',
+    os: opts.os ?? 'linux',
+    agentVersion: '0.0.0-test',
+    tokenHash: 'test-hash',
+  });
+
+  const socket = makeFakeSocket();
+  if (opts.online !== false) {
+    gw.registerDaemon(daemonId, socket);
+  }
+  return { daemonId, socket, userId };
+}
+
+export function attachFakeDaemonReply(
+  socket: FakeWSLike,
+  reply: (parsedMsg: unknown) => { ok: boolean; error?: string; data?: Record<string, unknown> },
+): void {
+  const original = socket.send.bind(socket);
+  socket.send = (data: string) => {
+    original(data);
+    let msg: { payload?: { requestId?: string } };
+    try {
+      msg = JSON.parse(data) as { payload?: { requestId?: string } };
+    } catch {
+      return;
+    }
+    const requestId = msg.payload?.requestId;
+    if (!requestId) return;
+    const result = reply(msg);
+    resolveJob(requestId, result);
+  };
 }
 
 // Test-only direct DB update — Task 11's POST /yank endpoint will exercise the route path.

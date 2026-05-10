@@ -11,6 +11,7 @@ import { buildUsersRoutes } from './routes/users.js';
 import { buildInvitationsRoutes } from './routes/invitations.js';
 import { buildDaemonsRoutes } from './routes/daemons.js';
 import { buildArtifactsRoutes } from './routes/artifacts.js';
+import { buildLocalRoutes } from './routes/local.js';
 
 export interface AppOptions {
   db?: Db;
@@ -63,6 +64,7 @@ export function buildApp(opts: AppOptions = {}) {
     );
     app.route('/api/daemons', buildDaemonsRoutes(opts.db));
     app.route('/api/artifacts', buildArtifactsRoutes(opts.db));
+    app.route('/api/local', buildLocalRoutes(opts.db));
   }
 
   app.notFound((c) => {
