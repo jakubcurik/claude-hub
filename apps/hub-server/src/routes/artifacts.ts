@@ -267,6 +267,37 @@ export function buildArtifactsRoutes(db: Db) {
     return c.json({ downloadUrl: url, sha256: row.sha });
   });
 
+  app.delete('/:slug', requireUser(db), async (c) => {
+    let slug: string;
+    try {
+      slug = slugSchema.parse(c.req.param('slug'));
+    } catch (e) {
+      return c.json<ApiError>(
+        { code: 'invalid_input', message: e instanceof Error ? e.message : 'invalid slug' },
+        400,
+      );
+    }
+    const user = c.get('user');
+    if (user.role !== 'admin') {
+      return c.json<ApiError>({ code: 'forbidden', message: 'admin role required' }, 403);
+    }
+    const aRows = await db.select().from(artifacts).where(eq(artifacts.slug, slug)).limit(1);
+    const a = aRows[0];
+    if (!a) {
+      return c.json<ApiError>({ code: 'not_found', message: 'artifact not found' }, 404);
+    }
+    await db.update(artifacts).set({ archivedAt: new Date() }).where(eq(artifacts.id, a.id));
+    await db.insert(auditLog).values({
+      id: uuidv7(),
+      actorUserId: user.id,
+      action: 'artifact.archive',
+      targetType: 'artifact',
+      targetId: a.id,
+      payload: { slug },
+    });
+    return c.json({ ok: true });
+  });
+
   app.post('/:slug/yank', requireUser(db), async (c) => {
     let slug: string;
     try {
