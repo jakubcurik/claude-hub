@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Hono } from 'hono';
 import { logger as honoLogger } from 'hono/logger';
+import { sql } from 'drizzle-orm';
 import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from './db/client.js';
+import type { MinioContext } from './storage/minio.js';
 import { buildAuthRoutes } from './routes/auth.js';
 import { buildSetupRoutes } from './routes/setup.js';
 
 export interface AppOptions {
   db?: Db;
+  minio?: MinioContext;
   skipDb?: boolean;
   secureCookie?: boolean;
 }
@@ -17,6 +20,30 @@ export function buildApp(opts: AppOptions = {}) {
   app.use('*', honoLogger());
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
+
+  app.get('/readyz', async (c) => {
+    const result: Record<string, string> = {};
+    let status: 200 | 503 = 200;
+    if (opts.db) {
+      try {
+        await opts.db.execute(sql`select 1`);
+        result.db = 'ok';
+      } catch {
+        result.db = 'fail';
+        status = 503;
+      }
+    }
+    if (opts.minio) {
+      try {
+        await opts.minio.ping();
+        result.minio = 'ok';
+      } catch {
+        result.minio = 'fail';
+        status = 503;
+      }
+    }
+    return c.json(result, status);
+  });
 
   if (opts.db) {
     app.route('/api/auth', buildAuthRoutes(opts.db, { secureCookie: opts.secureCookie ?? false }));
