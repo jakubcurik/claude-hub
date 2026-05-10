@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { buildApp } from '../../src/app.js';
 import { users } from '../../src/db/schema.js';
@@ -76,5 +76,27 @@ describe('admin users routes', () => {
       headers: { cookie: adminCookie },
     });
     expect(res.status).toBe(204);
+  });
+
+  it('PATCH /api/users/:id blocks admin self-demotion to member', async () => {
+    const adminId = (await pg.db.select().from(users).where(eq(users.email, 'a@b.cz')).limit(1))[0]!
+      .id;
+    const res = await app.request(`/api/users/${adminId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ role: 'member' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH /api/users/:id blocks admin self-deactivation', async () => {
+    const adminId = (await pg.db.select().from(users).where(eq(users.email, 'a@b.cz')).limit(1))[0]!
+      .id;
+    const res = await app.request(`/api/users/${adminId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(res.status).toBe(400);
   });
 });

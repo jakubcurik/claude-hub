@@ -54,6 +54,16 @@ export function buildUsersRoutes(db: Db, opts: { publicUrl: string }) {
       const err: ApiError = { code: 'validation_error', message: 'Invalid body' };
       return c.json(err, 400);
     }
+    if (id === c.var.user.id) {
+      if (parsed.data.role && parsed.data.role !== 'admin') {
+        const err: ApiError = { code: 'validation_error', message: 'Cannot change own role' };
+        return c.json(err, 400);
+      }
+      if (parsed.data.active === false) {
+        const err: ApiError = { code: 'validation_error', message: 'Cannot deactivate self' };
+        return c.json(err, 400);
+      }
+    }
     const update: Partial<typeof users.$inferInsert> = {};
     if (parsed.data.role) update.role = parsed.data.role;
     if (parsed.data.active !== undefined) update.active = parsed.data.active;
