@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { v7 as uuidv7 } from 'uuid';
-import type { ApiError, UserDTO } from '@claude-hub/shared-types';
+import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { equalizeVerifyCost, hashPassword, verifyPassword } from '../auth/password.js';
@@ -13,6 +13,7 @@ import { getCookie } from 'hono/cookie';
 import { writeAudit } from '../audit.js';
 import { defaultLoginLimiter } from '../middleware/rate-limit.js';
 import { requireUser, type AuthEnv } from '../middleware/auth.js';
+import { toUserDTO } from './_user-dto.js';
 
 const RegisterSchema = z.object({
   email: z
@@ -30,17 +31,6 @@ const LoginSchema = z.object({
     .transform((s) => s.toLowerCase().trim()),
   password: z.string(),
 });
-
-function toDTO(row: typeof users.$inferSelect): UserDTO {
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    role: row.role,
-    createdAt: row.createdAt.toISOString(),
-    lastLoginAt: row.lastLoginAt ? row.lastLoginAt.toISOString() : null,
-  };
-}
 
 export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
   const app = new Hono<AuthEnv>();
@@ -80,7 +70,7 @@ export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
       targetId: id,
     });
     const row = (await db.select().from(users).where(eq(users.id, id)).limit(1))[0]!;
-    return c.json({ user: toDTO(row) }, 201);
+    return c.json({ user: toUserDTO(row) }, 201);
   });
 
   app.post('/login', async (c) => {
@@ -119,7 +109,7 @@ export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
       targetId: row.id,
       payload: { ip },
     });
-    return c.json({ user: toDTO({ ...row, lastLoginAt: new Date() }) });
+    return c.json({ user: toUserDTO({ ...row, lastLoginAt: new Date() }) });
   });
 
   app.post('/logout', async (c) => {
@@ -134,7 +124,7 @@ export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
   app.get('/me', requireUser(db), async (c) => {
     const u = c.var.user;
     const row = (await db.select().from(users).where(eq(users.id, u.id)).limit(1))[0]!;
-    return c.json(toDTO(row));
+    return c.json(toUserDTO(row));
   });
 
   return app;

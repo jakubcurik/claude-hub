@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { hashPassword } from '../auth/password.js';
 import { writeAudit } from '../audit.js';
+import { toUserDTO } from './_user-dto.js';
 
 const InitSchema = z.object({
   email: z
@@ -19,8 +20,8 @@ const InitSchema = z.object({
 });
 
 async function userCount(db: Db): Promise<number> {
-  const r = await db.execute<{ count: string }>(sql`select count(*)::text as count from users`);
-  return Number.parseInt(r[0]?.count ?? '0', 10);
+  const r = await db.execute<{ count: number }>(sql`select count(*)::int as count from users`);
+  return r[0]?.count ?? 0;
 }
 
 export function buildSetupRoutes(db: Db) {
@@ -30,6 +31,11 @@ export function buildSetupRoutes(db: Db) {
     return c.json({ needsSetup: (await userCount(db)) === 0 });
   });
 
+  // First-run bootstrap. The check-then-insert is not race-safe under
+  // concurrent requests (two simultaneous /init calls with different
+  // emails could both create admins), but for a first-run wizard at
+  // single-tenant deployment scale this is acceptable. If hardening is
+  // needed, wrap in a transaction with `pg_advisory_xact_lock(<key>)`.
   app.post('/init', async (c) => {
     if ((await userCount(db)) > 0) {
       const err: ApiError = { code: 'conflict', message: 'Setup already completed' };
@@ -45,7 +51,6 @@ export function buildSetupRoutes(db: Db) {
       return c.json(err, 400);
     }
     const id = uuidv7();
-    const createdAt = new Date();
     await db.insert(users).values({
       id,
       email: parsed.data.email,
@@ -59,19 +64,8 @@ export function buildSetupRoutes(db: Db) {
       targetType: 'user',
       targetId: id,
     });
-    return c.json(
-      {
-        user: {
-          id,
-          email: parsed.data.email,
-          name: parsed.data.name,
-          role: 'admin' as const,
-          createdAt: createdAt.toISOString(),
-          lastLoginAt: null,
-        },
-      },
-      201,
-    );
+    const row = (await db.select().from(users).where(eq(users.id, id)).limit(1))[0]!;
+    return c.json({ user: toUserDTO(row) }, 201);
   });
 
   return app;
