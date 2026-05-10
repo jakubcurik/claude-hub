@@ -18,9 +18,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm -r --filter "./packages/*" run build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm --filter shared-types test
+      - run: pnpm --filter @claude-hub/wss-protocol test
       - run: pnpm --filter dashboard test
       - run: pnpm --filter dashboard build
 
@@ -39,7 +41,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter shared-types build
+      - run: pnpm -r --filter "./packages/*" run build
       - run: pnpm --filter hub-server typecheck
       - run: pnpm --filter hub-server test
         env:
@@ -58,10 +60,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter shared-types build
+      - run: pnpm -r --filter "./packages/*" run build
       - run: pnpm --filter hub-server build
       - run: pnpm --filter dashboard build
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm --filter e2e exec playwright install --with-deps chromium
       - run: pnpm --filter e2e run test
         env:
           TESTCONTAINERS_RYUK_DISABLED: 'true'

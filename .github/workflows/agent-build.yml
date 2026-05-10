@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+name: agent-build
+
+on:
+  push:
+    paths:
+      - 'apps/agent/**'
+      - '.github/workflows/agent-build.yml'
+  pull_request:
+    paths:
+      - 'apps/agent/**'
+      - '.github/workflows/agent-build.yml'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: apps/agent/go.sum
+      - name: Install Linux keyring deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev dbus-x11 gnome-keyring
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/agent
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: apps/agent/go.sum
+      - run: go build -o dist/claude-hub-agent${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/claude-hub-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-hub-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: apps/agent/dist/*

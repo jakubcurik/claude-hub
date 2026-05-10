@@ -9,6 +9,7 @@ import { buildAuthRoutes } from './routes/auth.js';
 import { buildSetupRoutes } from './routes/setup.js';
 import { buildUsersRoutes } from './routes/users.js';
 import { buildInvitationsRoutes } from './routes/invitations.js';
+import { buildDaemonsRoutes } from './routes/daemons.js';
 
 export interface AppOptions {
   db?: Db;
@@ -59,6 +60,7 @@ export function buildApp(opts: AppOptions = {}) {
       '/api/invitations',
       buildInvitationsRoutes(opts.db, { secureCookie: opts.secureCookie ?? false }),
     );
+    app.route('/api/daemons', buildDaemonsRoutes(opts.db));
   }
 
   app.notFound((c) => {

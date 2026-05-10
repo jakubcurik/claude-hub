@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest';
-import { users, sessions, auditLog, pairings, invitations } from './schema.js';
+import { users, sessions, auditLog, pairings, invitations, daemons } from './schema.js';
 
 describe('schema', () => {
   it('users table has expected columns', () => {
@@ -43,6 +43,29 @@ describe('schema', () => {
   it('pairings table has pin + expiresAt', () => {
     const cols = Object.keys(pairings);
     expect(cols).toEqual(expect.arrayContaining(['id', 'userId', 'pin', 'expiresAt', 'createdAt']));
+  });
+
+  it('pairings has expected columns', () => {
+    const cols = Object.keys(pairings as unknown as Record<string, unknown>);
+    for (const c of ['id', 'pin', 'userId', 'expiresAt', 'consumedAt']) {
+      expect(cols).toContain(c);
+    }
+  });
+
+  it('daemons has expected columns', () => {
+    const cols = Object.keys(daemons as unknown as Record<string, unknown>);
+    for (const c of [
+      'id',
+      'userId',
+      'hostname',
+      'os',
+      'agentVersion',
+      'tokenHash',
+      'pairedAt',
+      'lastSeenAt',
+    ]) {
+      expect(cols).toContain(c);
+    }
   });
 
   it('invitations table has token + email + redemption fields', () => {
