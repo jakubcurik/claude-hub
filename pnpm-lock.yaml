@@ -89,6 +89,9 @@ importers:
       '@claude-hub/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@claude-hub/wss-protocol':
+        specifier: workspace:*
+        version: link:../../packages/wss-protocol
       '@hono/node-server':
         specifier: ^1.13.2
         version: 1.19.14(hono@4.12.18)
