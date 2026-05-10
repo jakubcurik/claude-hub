@@ -1,5 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  boolean,
+  check,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
 
 export const users = pgTable(
   'users',
@@ -58,6 +68,7 @@ export const pairings = pgTable(
   },
   (t) => ({
     pinIdx: uniqueIndex('pairings_pin_idx').on(t.pin),
+    expiresIdx: index('pairings_expires_idx').on(t.expiresAt),
   }),
 );
 
@@ -79,6 +90,7 @@ export const daemons = pgTable(
   },
   (t) => ({
     userIdx: index('daemons_user_id_idx').on(t.userId),
+    osCheck: check('daemons_os_check', sql`${t.os} IN ('windows', 'macos', 'linux')`),
   }),
 );
 
