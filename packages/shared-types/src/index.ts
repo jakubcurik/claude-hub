@@ -4,3 +4,4 @@ export * from './artifacts.js';
 export * from './daemons.js';
 export * from './inventory.js';
 export * from './api-error.js';
+export * from './invitations.js';

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { boolean, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const users = pgTable(
   'users',
@@ -57,5 +57,31 @@ export const pairings = pgTable(
   },
   (t) => ({
     pinIdx: uniqueIndex('pairings_pin_idx').on(t.pin),
+  }),
+);
+
+export const invitations = pgTable(
+  'invitations',
+  {
+    id: text('id').primaryKey(),
+    token: text('token').notNull(),
+    email: text('email'),
+    role: text('role', { enum: ['admin', 'member'] })
+      .notNull()
+      .default('member'),
+    invitedByUserId: text('invited_by_user_id')
+      .notNull()
+      .references(() => users.id),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true, mode: 'date' }),
+    redeemedByUserId: text('redeemed_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex('invitations_token_idx').on(t.token),
+    emailIdx: index('invitations_email_idx').on(t.email),
+    expiresIdx: index('invitations_expires_idx').on(t.expiresAt),
   }),
 );

@@ -8,6 +8,13 @@
       "when": 1778374156222,
       "tag": "0000_thankful_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778406239427,
+      "tag": "0001_nosy_cerebro",
+      "breakpoints": true
     }
   ]
 }

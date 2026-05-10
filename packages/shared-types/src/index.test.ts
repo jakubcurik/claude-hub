@@ -7,6 +7,7 @@ import type {
   DaemonOS,
   InventoryItem,
   ApiError,
+  InvitationDTO,
 } from './index.js';
 
 describe('shared-types', () => {
@@ -51,5 +52,20 @@ describe('shared-types', () => {
   it('ApiError carries code and message', () => {
     const err: ApiError = { code: 'unauthorized', message: 'no session' };
     expect(err.code).toBe('unauthorized');
+  });
+
+  it('InvitationDTO shape matches contract', () => {
+    const inv: InvitationDTO = {
+      id: '00000000-0000-0000-0000-000000000000',
+      email: 'invitee@example.com',
+      role: 'member',
+      invitedByUserId: '00000000-0000-0000-0000-000000000001',
+      expiresAt: '2026-05-15T00:00:00Z',
+      redeemedAt: null,
+      redeemedByUserId: null,
+      createdAt: '2026-05-10T00:00:00Z',
+    };
+    expect(inv.role).toBe('member');
+    expect(inv.redeemedAt).toBeNull();
   });
 });
