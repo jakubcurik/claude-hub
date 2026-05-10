@@ -19,3 +19,20 @@ func TestKeyringStoreSetGetDelete(t *testing.T) {
 	_, err = s.Get("device_token")
 	require.ErrorIs(t, err, ErrNotFound)
 }
+
+func TestFileStoreSetGetDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileStore(dir+"/cred.enc", []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	require.NoError(t, s.Set("device_token", "tok-xyz"))
+
+	s2, err := NewFileStore(dir+"/cred.enc", []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	got, err := s2.Get("device_token")
+	require.NoError(t, err)
+	require.Equal(t, "tok-xyz", got)
+
+	require.NoError(t, s2.Delete("device_token"))
+	_, err = s2.Get("device_token")
+	require.ErrorIs(t, err, ErrNotFound)
+}
