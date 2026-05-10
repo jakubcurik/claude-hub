@@ -4,6 +4,7 @@ import { logger as honoLogger } from 'hono/logger';
 import type { ApiError } from '@claude-hub/shared-types';
 import type { Db } from './db/client.js';
 import { buildAuthRoutes } from './routes/auth.js';
+import { buildSetupRoutes } from './routes/setup.js';
 
 export interface AppOptions {
   db?: Db;
@@ -19,6 +20,7 @@ export function buildApp(opts: AppOptions = {}) {
 
   if (opts.db) {
     app.route('/api/auth', buildAuthRoutes(opts.db, { secureCookie: opts.secureCookie ?? false }));
+    app.route('/api/setup', buildSetupRoutes(opts.db));
   }
 
   app.notFound((c) => {
