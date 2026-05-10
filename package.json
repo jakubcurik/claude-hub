@@ -12,7 +12,7 @@
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --filter=!e2e run test",
     "test:e2e": "pnpm --filter e2e run test",
     "db:gen": "pnpm --filter hub-server run db:gen",
     "db:migrate": "pnpm --filter hub-server run db:migrate",
