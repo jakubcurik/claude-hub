@@ -213,5 +213,30 @@ export function buildArtifactsRoutes(db: Db) {
     return c.json({ artifact: a, versions });
   });
 
+  app.get('/:slug/versions/:version', requireUser(db), async (c) => {
+    let slug: string;
+    let version: string;
+    try {
+      slug = slugSchema.parse(c.req.param('slug'));
+      version = semverSchema.parse(c.req.param('version'));
+    } catch (e) {
+      return c.json<ApiError>(
+        { code: 'invalid_input', message: e instanceof Error ? e.message : 'invalid input' },
+        400,
+      );
+    }
+    const rows = await db
+      .select()
+      .from(artifactVersions)
+      .innerJoin(artifacts, eq(artifacts.id, artifactVersions.artifactId))
+      .where(and(eq(artifacts.slug, slug), eq(artifactVersions.version, version)))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      return c.json<ApiError>({ code: 'not_found', message: 'version not found' }, 404);
+    }
+    return c.json(row.artifact_versions);
+  });
+
   return app;
 }
