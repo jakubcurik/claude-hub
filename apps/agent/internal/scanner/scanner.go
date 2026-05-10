@@ -1,16 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 package scanner
 
-import "github.com/animato/claude-hub/agent/internal/api"
+import (
+	"github.com/animato/claude-hub/agent/internal/api"
+)
 
 type Scanner interface {
-	Scan(claudeHome string) ([]api.InventoryItem, error)
+	Type() api.ArtifactType
+	Scan() ([]api.InventoryItem, error)
 }
 
-type Noop struct{}
+type Registry struct {
+	scanners []Scanner
+}
 
-func NewNoop() *Noop { return &Noop{} }
+func NewRegistry(scs ...Scanner) *Registry {
+	return &Registry{scanners: scs}
+}
 
-func (n *Noop) Scan(_ string) ([]api.InventoryItem, error) {
-	return []api.InventoryItem{}, nil
+func (r *Registry) ScanAll() ([]api.InventoryItem, error) {
+	out := []api.InventoryItem{}
+	for _, s := range r.scanners {
+		items, err := s.Scan()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return out, nil
 }
