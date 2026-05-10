@@ -5,6 +5,7 @@ import { loadEnv } from './env.js';
 import { createLogger } from './logger.js';
 import { createDb } from './db/client.js';
 import { createMinioClient } from './storage/minio.js';
+import { startPairingSweep } from './jobs/pairing-sweep.js';
 
 async function main() {
   const env = loadEnv();
@@ -31,6 +32,14 @@ async function main() {
   serve({ fetch: app.fetch, hostname, port }, (info) => {
     logger.info({ port: info.port, host: hostname }, 'hub-server listening');
   });
+
+  const stopSweep = startPairingSweep(db);
+  const shutdown = () => {
+    stopSweep();
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 main().catch((err) => {
