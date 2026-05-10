@@ -25,3 +25,16 @@ export function validatePasswordStrength(plain: string): void {
     throw new Error('Password must be at least 12 characters long');
   }
 }
+
+let DUMMY_HASH_PROMISE: Promise<string> | undefined;
+async function getDummyHash(): Promise<string> {
+  if (!DUMMY_HASH_PROMISE) {
+    DUMMY_HASH_PROMISE = hash('dummy-equalizer-input', ARGON2_OPTIONS);
+  }
+  return DUMMY_HASH_PROMISE;
+}
+
+export async function equalizeVerifyCost(plain: string): Promise<void> {
+  const dummy = await getDummyHash();
+  await verify(dummy, plain).catch(() => undefined);
+}

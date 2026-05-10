@@ -5,6 +5,7 @@ import { buildApp } from '../../src/app.js';
 import { startPostgres, type PgFixture } from '../helpers/postgres.js';
 import { users } from '../../src/db/schema.js';
 import { hashPassword } from '../../src/auth/password.js';
+import { defaultLoginLimiter } from '../../src/middleware/rate-limit.js';
 import { v7 as uuidv7 } from 'uuid';
 
 describe('auth routes', () => {
@@ -18,6 +19,8 @@ describe('auth routes', () => {
 
   beforeEach(async () => {
     await pg.db.execute(sql`TRUNCATE users, sessions, audit_log, pairings CASCADE`);
+    defaultLoginLimiter.reset('unknown', 'seed@b.cz');
+    defaultLoginLimiter.reset('unknown', 'wrong@b.cz');
     await pg.db.insert(users).values({
       id: uuidv7(),
       email: 'seed@b.cz',
@@ -84,5 +87,44 @@ describe('auth routes', () => {
     await app.request('/api/auth/logout', { method: 'POST', headers: { cookie } });
     const res = await app.request('/api/auth/me', { headers: { cookie } });
     expect(res.status).toBe(401);
+  });
+
+  it('POST /api/auth/login 6th attempt returns 429', async () => {
+    for (let i = 0; i < 5; i++) {
+      await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'seed@b.cz', password: 'wrong' }),
+      });
+    }
+    const res = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'seed@b.cz', password: 'wrong' }),
+    });
+    expect(res.status).toBe(429);
+  });
+
+  it('POST /api/auth/register duplicate email returns 409', async () => {
+    await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'dup@b.cz', password: 'longpassword12', name: 'A' }),
+    });
+    const res = await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'dup@b.cz', password: 'longpassword12', name: 'B' }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('POST /api/auth/register short password returns 400', async () => {
+    const res = await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'short@b.cz', password: 'short', name: 'S' }),
+    });
+    expect(res.status).toBe(400);
   });
 });

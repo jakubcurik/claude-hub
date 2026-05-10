@@ -6,7 +6,7 @@ import { v7 as uuidv7 } from 'uuid';
 import type { ApiError, UserDTO } from '@claude-hub/shared-types';
 import type { Db } from '../db/client.js';
 import { users } from '../db/schema.js';
-import { hashPassword, validatePasswordStrength, verifyPassword } from '../auth/password.js';
+import { equalizeVerifyCost, hashPassword, verifyPassword } from '../auth/password.js';
 import { createSession, deleteSession } from '../auth/session.js';
 import { setSessionCookie, clearSessionCookie, SESSION_COOKIE } from '../auth/cookie.js';
 import { getCookie } from 'hono/cookie';
@@ -15,13 +15,19 @@ import { defaultLoginLimiter } from '../middleware/rate-limit.js';
 import { requireUser, type AuthEnv } from '../middleware/auth.js';
 
 const RegisterSchema = z.object({
-  email: z.string().email(),
-  password: z.string(),
+  email: z
+    .string()
+    .email()
+    .transform((s) => s.toLowerCase().trim()),
+  password: z.string().min(12),
   name: z.string().min(1).max(120),
 });
 
 const LoginSchema = z.object({
-  email: z.string().email(),
+  email: z
+    .string()
+    .email()
+    .transform((s) => s.toLowerCase().trim()),
   password: z.string(),
 });
 
@@ -49,13 +55,6 @@ export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
       };
       return c.json(err, 400);
     }
-    try {
-      validatePasswordStrength(parsed.data.password);
-    } catch (e) {
-      const err: ApiError = { code: 'validation_error', message: (e as Error).message };
-      return c.json(err, 400);
-    }
-
     const existing = await db
       .select()
       .from(users)
@@ -99,7 +98,12 @@ export function buildAuthRoutes(db: Db, opts: { secureCookie: boolean }) {
     const row = (
       await db.select().from(users).where(eq(users.email, parsed.data.email)).limit(1)
     )[0];
-    if (!row || !row.active || !(await verifyPassword(row.passwordHash, parsed.data.password))) {
+    const passwordOk =
+      row && row.active
+        ? await verifyPassword(row.passwordHash, parsed.data.password)
+        : (await equalizeVerifyCost(parsed.data.password), false);
+
+    if (!row || !row.active || !passwordOk) {
       const err: ApiError = { code: 'unauthorized', message: 'Invalid email or password' };
       return c.json(err, 401);
     }
