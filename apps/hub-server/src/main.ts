@@ -6,6 +6,8 @@ import { createLogger } from './logger.js';
 import { createDb } from './db/client.js';
 import { createMinioClient } from './storage/minio.js';
 import { startPairingSweep } from './jobs/pairing-sweep.js';
+import { attachWSS } from './ws/server.js';
+import { connectionManager } from './ws/manager.js';
 
 async function main() {
   const env = loadEnv();
@@ -29,9 +31,11 @@ async function main() {
   const hostname = host ?? '0.0.0.0';
   const port = Number.parseInt(portStr ?? '3000', 10);
 
-  serve({ fetch: app.fetch, hostname, port }, (info) => {
+  const { injectWebSocket } = attachWSS(app, db, connectionManager);
+  const server = serve({ fetch: app.fetch, hostname, port }, (info) => {
     logger.info({ port: info.port, host: hostname }, 'hub-server listening');
   });
+  injectWebSocket(server);
 
   const stopSweep = startPairingSweep(db);
   const shutdown = () => {
