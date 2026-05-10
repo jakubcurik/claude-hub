@@ -128,6 +128,9 @@ importers:
       minio:
         specifier: ^8.0.2
         version: 8.0.7
+      nanoid:
+        specifier: ^5.0.0
+        version: 5.1.11
       pino:
         specifier: ^9.5.0
         version: 9.14.0
@@ -4763,6 +4766,14 @@ packages:
     engines: { node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1 }
     hasBin: true
 
+  nanoid@5.1.11:
+    resolution:
+      {
+        integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==,
+      }
+    engines: { node: ^18 || >=20 }
+    hasBin: true
+
   natural-compare@1.4.0:
     resolution:
       {
@@ -9030,6 +9041,8 @@ snapshots:
     optional: true
 
   nanoid@3.3.12: {}
+
+  nanoid@5.1.11: {}
 
   natural-compare@1.4.0: {}
 
