@@ -63,7 +63,7 @@ jobs:
       - run: pnpm -r --filter "./packages/*" run build
       - run: pnpm --filter hub-server build
       - run: pnpm --filter dashboard build
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm --filter e2e exec playwright install --with-deps chromium
       - run: pnpm --filter e2e run test
         env:
           TESTCONTAINERS_RYUK_DISABLED: 'true'
