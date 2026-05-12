@@ -2256,9 +2256,66 @@ button.secondary.dark:hover {
 }
 
 .analytics-empty {
-  margin: 30px auto;
+  margin: auto;
+  padding: 32px 12px;
+  text-align: center;
   color: var(--muted);
   font-size: 13px;
+}
+
+.analytics-card > .analytics-empty {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+}
+
+/* ----- Chart frame & recharts overrides ----- */
+
+.analytics-chart-frame {
+  position: relative;
+  width: 100%;
+  min-height: 220px;
+}
+
+.analytics-chart-frame .recharts-surface {
+  overflow: visible;
+}
+
+.analytics-chart-frame .recharts-wrapper:focus,
+.analytics-chart-frame .recharts-surface:focus {
+  outline: none;
+}
+
+.analytics-chart-frame .recharts-cartesian-axis-line,
+.analytics-chart-frame .recharts-cartesian-axis-tick-line {
+  stroke: var(--border-strong);
+}
+
+.analytics-chart-frame .recharts-cartesian-axis-tick-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-chart-frame .recharts-legend-item-text {
+  color: var(--ink-muted) !important;
+}
+
+.analytics-chart-frame .recharts-tooltip-wrapper {
+  transition: transform 80ms ease-out;
+  pointer-events: none;
+}
+
+.analytics-chart-frame .recharts-bar-rectangle {
+  transition: opacity 120ms ease;
+}
+
+.analytics-chart-frame .recharts-bar-rectangle:hover {
+  opacity: 0.85;
+}
+
+.analytics-chart-frame .recharts-active-dot circle {
+  filter: drop-shadow(0 0 6px var(--accent-soft-strong));
 }
 
 .analytics-top-list {
@@ -2338,6 +2395,14 @@ button.secondary.dark:hover {
   font-size: 13px;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* Chrome může čísla v tabulkách auto-detekovat jako telefon/datum a obarvit je
+ * standardním link colorem — explicitně to potlačíme. */
+.analytics-table td,
+.analytics-table td * {
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .analytics-table-row {

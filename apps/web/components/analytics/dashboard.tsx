@@ -127,6 +127,14 @@ export function AnalyticsDashboard({
       .map((row) => ({ id: row.userId, email: row.userEmail }));
   }, [overview]);
 
+  const userEmailById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of overview.perUser) {
+      if (row.userEmail) map.set(row.userId, row.userEmail);
+    }
+    return map;
+  }, [overview.perUser]);
+
   return (
     <section className="analytics-content">
       <div className="analytics-toolbar">
@@ -230,7 +238,7 @@ export function AnalyticsDashboard({
             <h3>Model mix</h3>
             <p>Tokeny per uživatel × model.</p>
           </header>
-          <ModelMixChart data={overview.modelMix} />
+          <ModelMixChart data={overview.modelMix} userEmailById={userEmailById} />
         </article>
         <article className="analytics-card">
           <header>

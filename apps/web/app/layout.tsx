@@ -18,7 +18,9 @@ const dmSans = DM_Sans({
 
 export const metadata: Metadata = {
   title: "Claude Hub",
-  description: "Týmový katalog rozšíření pro Claude Code s kontrolou lokální instalace."
+  description: "Týmový katalog rozšíření pro Claude Code s kontrolou lokální instalace.",
+  // Brání Chromu auto-detekovat čísla v tabulkách jako telefony/data a barvit je linkem.
+  formatDetection: { telephone: false, date: false, address: false, email: false }
 };
 
 export default function RootLayout({
