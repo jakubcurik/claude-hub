@@ -141,6 +141,23 @@ export interface CatalogEventRecord {
   metadata?: Record<string, unknown>;
 }
 
+export interface InstallOptions {
+  scope?: "user" | "project";
+  projectPath?: string;
+}
+
+export interface InstallScopeState {
+  scope: "user" | "project";
+  projectPath?: string;
+  projectName?: string;
+  installed: boolean;
+  enabled: boolean;
+  managedByHub: boolean;
+  localVersion?: string;
+  localChanges: boolean;
+  updateAvailable: boolean;
+}
+
 export interface LocalAssetState {
   assetId: string;
   type: AssetType;
@@ -154,6 +171,8 @@ export interface LocalAssetState {
   localChanges: boolean;
   updateAvailable: boolean;
   warnings: string[];
+  /** Stav instalace v každém scope (user + projekty), kde Hub našel manifest. */
+  scopes?: InstallScopeState[];
 }
 
 export interface InstallOperation {

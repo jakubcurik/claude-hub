@@ -24,6 +24,7 @@ import type {
   CatalogAsset,
   Collection,
   InstallOperation,
+  InstallOptions,
   InstallPreview,
   LocalAsset,
   LocalAssetState,
@@ -153,6 +154,10 @@ export function CatalogExperience({
   const [members, setMembers] = useState(initialMembers);
   const [signingKeys, setSigningKeys] = useState(initialSigningKeys);
   const [diffModal, setDiffModal] = useState<{ asset: CatalogAsset; diff: AssetDiff } | null>(null);
+  const [scopePicker, setScopePicker] = useState<{
+    asset: CatalogAsset;
+    projects: Array<{ path: string; name: string }>;
+  } | null>(null);
   const [versionsModal, setVersionsModal] = useState<{
     asset: CatalogAsset;
     versions: Array<{ version: string; publishedAt: string; publishedBy: string; signature?: string }>;
@@ -331,27 +336,51 @@ export function CatalogExperience({
   }
 
   async function requestInstall(asset: CatalogAsset) {
-    const preview = await client.installPreview(asset);
-
-    setModal({
-      title: states[asset.id]?.installed ? `Aktualizovat ${asset.name}` : `Nainstalovat ${asset.name}`,
-      intro: "Než se cokoli zapíše do Claude Code, zkontrolujte plánované změny v souborech.",
-      confirmLabel: states[asset.id]?.installed ? "Použít aktualizaci" : "Nainstalovat",
-      operations: preview.operations,
-      warnings: preview.warnings,
-      requiredEnv: preview.requiredEnv,
-      onConfirm: async () => {
-        await client.install(asset);
-        setModal(null);
-        await refresh();
-        showToast(`Nainstalováno: ${asset.name}.`);
-        void logCatalogEvent({
-          event: states[asset.id]?.installed ? "update" : "install",
-          assetId: asset.id,
-          assetVersion: asset.version
-        });
+    // Sesbírej detekované projekty z lokálních assetů.
+    const seen = new Map<string, { path: string; name: string }>();
+    for (const item of localAssets) {
+      if (item.scope === "project" && item.projectPath && item.projectName) {
+        if (!seen.has(item.projectPath)) {
+          seen.set(item.projectPath, { path: item.projectPath, name: item.projectName });
+        }
       }
-    });
+    }
+    const projects = Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    setScopePicker({ asset, projects });
+  }
+
+  async function confirmInstallScope(asset: CatalogAsset, options: InstallOptions) {
+    setScopePicker(null);
+    try {
+      const preview = await client.installPreview(asset, options);
+      const scopeLabel =
+        options.scope === "project"
+          ? localAssets.find((a) => a.projectPath === options.projectPath)?.projectName || "projekt"
+          : "Osobní";
+      setModal({
+        title: states[asset.id]?.installed
+          ? `Aktualizovat ${asset.name} (${scopeLabel})`
+          : `Nainstalovat ${asset.name} (${scopeLabel})`,
+        intro: "Než se cokoli zapíše do Claude Code, zkontrolujte plánované změny v souborech.",
+        confirmLabel: states[asset.id]?.installed ? "Použít aktualizaci" : "Nainstalovat",
+        operations: preview.operations,
+        warnings: preview.warnings,
+        requiredEnv: preview.requiredEnv,
+        onConfirm: async () => {
+          await client.install(asset, options);
+          setModal(null);
+          await refresh();
+          showToast(`Nainstalováno: ${asset.name} (${scopeLabel}).`);
+          void logCatalogEvent({
+            event: states[asset.id]?.installed ? "update" : "install",
+            assetId: asset.id,
+            assetVersion: asset.version
+          });
+        }
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Náhled instalace selhal.");
+    }
   }
 
   async function setEnabled(asset: CatalogAsset, enabled: boolean) {
@@ -807,6 +836,15 @@ export function CatalogExperience({
           />
         ) : null}
       </main>
+
+      {scopePicker ? (
+        <InstallScopeModal
+          asset={scopePicker.asset}
+          projects={scopePicker.projects}
+          onCancel={() => setScopePicker(null)}
+          onConfirm={(options) => confirmInstallScope(scopePicker.asset, options)}
+        />
+      ) : null}
 
       {modal ? (
         <InstallModal
@@ -1299,6 +1337,105 @@ function ListSection({
   }
 
   return <section className="list-panel">{items}</section>;
+}
+
+function InstallScopeModal({
+  asset,
+  onCancel,
+  onConfirm,
+  projects
+}: {
+  asset: CatalogAsset;
+  onCancel: () => void;
+  onConfirm: (options: InstallOptions) => void;
+  projects: Array<{ path: string; name: string }>;
+}) {
+  const [scope, setScope] = useState<"user" | "project">("user");
+  const [projectPath, setProjectPath] = useState<string>(projects[0]?.path ?? "");
+
+  function submit() {
+    if (scope === "project" && !projectPath) {
+      return;
+    }
+    onConfirm({ scope, projectPath: scope === "project" ? projectPath : undefined });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="scope-modal-title" aria-modal="true" className="modal" role="dialog">
+        <div className="modal-head">
+          <div>
+            <h2 id="scope-modal-title">Kam nainstalovat {asset.name}?</h2>
+            <p>
+              Vyberte, jestli se má položka uložit do vašeho uživatelského profilu, nebo jen do konkrétního
+              projektu. V projektu zůstane lokálně a sdílí se s ostatními přes Git.
+            </p>
+          </div>
+          <button aria-label="Zavřít dialog" className="icon-button" onClick={onCancel} type="button">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="scope-options">
+            <label className={`scope-option${scope === "user" ? " selected" : ""}`}>
+              <input
+                checked={scope === "user"}
+                name="install-scope"
+                onChange={() => setScope("user")}
+                type="radio"
+                value="user"
+              />
+              <div>
+                <strong>Osobní (~/.claude/)</strong>
+                <span>Dostupné ve všech vašich projektech.</span>
+              </div>
+            </label>
+            <label
+              className={`scope-option${scope === "project" ? " selected" : ""}${projects.length === 0 ? " disabled" : ""}`}
+            >
+              <input
+                checked={scope === "project"}
+                disabled={projects.length === 0}
+                name="install-scope"
+                onChange={() => setScope("project")}
+                type="radio"
+                value="project"
+              />
+              <div>
+                <strong>Projekt</strong>
+                <span>
+                  {projects.length === 0
+                    ? "Žádné projekty zatím detekované. Spusťte v projektu Claude Code, pak se objeví zde."
+                    : "Uloží se do <project>/.claude/, projekt si položku ponese s sebou."}
+                </span>
+                {scope === "project" && projects.length > 0 ? (
+                  <select
+                    className="scope-project-select"
+                    onChange={(event) => setProjectPath(event.target.value)}
+                    value={projectPath}
+                  >
+                    {projects.map((project) => (
+                      <option key={project.path} value={project.path}>
+                        {project.name} — {project.path}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
+            </label>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="secondary" onClick={onCancel} type="button">
+            Zrušit
+          </button>
+          <button className="primary" onClick={submit} type="button">
+            Pokračovat
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function InstallModal({

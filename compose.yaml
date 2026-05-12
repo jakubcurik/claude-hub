@@ -65,7 +65,10 @@ services:
       # ~/.claude.json drží user-level MCP konfiguraci (kterou CLI ukládá vedle .claude/).
       # Mount souboru zpřístupní daemonu detekci i instalaci MCP serverů.
       - ${CLAUDE_HUB_CLAUDE_JSON:-${USERPROFILE:-${HOME}}/.claude.json}:/data/.claude.json
-      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude:ro
+      # Workspace root je read-write, aby daemon mohl při Install do projektu
+      # zapsat soubory pod <project>/.claude/. V produkci nativní daemon má
+      # ke všem cestám stejná práva jako Claude Code CLI.
+      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude
 
   web:
     build:

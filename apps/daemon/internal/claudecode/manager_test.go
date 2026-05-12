@@ -23,7 +23,7 @@ func TestInstallSkillAndToggleState(t *testing.T) {
 		}},
 	}
 
-	preview, err := manager.PreviewInstall(asset)
+	preview, err := manager.PreviewInstall(asset, InstallOptions{})
 	if err != nil {
 		t.Fatalf("preview failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestInstallSkillAndToggleState(t *testing.T) {
 		t.Fatalf("expected 2 preview operations, got %d", len(preview.Operations))
 	}
 
-	state, err := manager.Install(asset)
+	state, err := manager.Install(asset, InstallOptions{})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestInstallSkillAndToggleState(t *testing.T) {
 		t.Fatalf("expected installed enabled state, got %+v", state)
 	}
 
-	state, err = manager.SetEnabled(asset, false)
+	state, err = manager.SetEnabled(asset, false, InstallOptions{})
 	if err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestInstallSkillAndToggleState(t *testing.T) {
 		t.Fatalf("expected installed disabled state, got %+v", state)
 	}
 
-	state, err = manager.SetEnabled(asset, true)
+	state, err = manager.SetEnabled(asset, true, InstallOptions{})
 	if err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCatalogStateUsesRealFilesystemPresence(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	if err := os.RemoveAll(filepath.Join(manager.ClaudeHome, "skills", "review-skill")); err != nil {
@@ -302,7 +302,7 @@ func TestRejectsUnsafeAssetPath(t *testing.T) {
 			Path:    "../escape.md",
 			Content: "bad",
 		}},
-	})
+	}, InstallOptions{})
 	if err == nil {
 		t.Fatal("expected unsafe path error")
 	}

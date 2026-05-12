@@ -44,7 +44,7 @@ func TestInstallMCPMergesIntoExistingFile(t *testing.T) {
 		}},
 	}
 
-	state, err := manager.Install(asset)
+	state, err := manager.Install(asset, InstallOptions{})
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestInstallMCPMergesIntoExistingFile(t *testing.T) {
 	}
 
 	// Uninstall musí vrátit `existing-server`, ale smazat `filesystem`
-	if _, err := manager.Uninstall(asset); err != nil {
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	contentBytes, _ = os.ReadFile(filepath.Join(claudeHome, ".mcp.json"))
@@ -103,10 +103,10 @@ func TestToggleMCPDisableEnableRoundtrip(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if _, err := manager.SetEnabled(asset, false); err != nil {
+	if _, err := manager.SetEnabled(asset, false, InstallOptions{}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestToggleMCPDisableEnableRoundtrip(t *testing.T) {
 		t.Fatalf("po disable má být klíč pryč z aktivního souboru")
 	}
 
-	if _, err := manager.SetEnabled(asset, true); err != nil {
+	if _, err := manager.SetEnabled(asset, true, InstallOptions{}); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 	contentBytes, _ = os.ReadFile(filepath.Join(manager.ClaudeHome, ".mcp.json"))
@@ -159,7 +159,7 @@ func TestInstallHookAppendsAndRemovesEntries(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestInstallHookAppendsAndRemovesEntries(t *testing.T) {
 		t.Fatalf("expected 2 hooks after install, got %d", len(doc["hooks"]["PreToolUse"]))
 	}
 
-	if _, err := manager.Uninstall(asset); err != nil {
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	contentBytes, _ = os.ReadFile(settingsPath)
@@ -271,7 +271,7 @@ func TestInstallMCPPreservesOtherClaudeJsonKeys(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -397,7 +397,7 @@ func TestInstallConfigMergesSectionAndPreservesOthers(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -417,7 +417,7 @@ func TestInstallConfigMergesSectionAndPreservesOthers(t *testing.T) {
 	}
 
 	// Uninstall vrátí původní model
-	if _, err := manager.Uninstall(asset); err != nil {
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	bytes, _ = os.ReadFile(settingsPath)
@@ -449,7 +449,7 @@ func TestToggleConfigDisableEnableRoundtrip(t *testing.T) {
 		}},
 	}
 
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	settingsPath := filepath.Join(manager.ClaudeHome, "settings.json")
@@ -464,14 +464,14 @@ func TestToggleConfigDisableEnableRoundtrip(t *testing.T) {
 		t.Fatalf("env sekce po install chybí")
 	}
 
-	if _, err := manager.SetEnabled(asset, false); err != nil {
+	if _, err := manager.SetEnabled(asset, false, InstallOptions{}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, ok := readSections()["env"]; ok {
 		t.Fatalf("env sekce by po disable měla zmizet z aktivního souboru")
 	}
 
-	if _, err := manager.SetEnabled(asset, true); err != nil {
+	if _, err := manager.SetEnabled(asset, true, InstallOptions{}); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 	if _, ok := readSections()["env"]; !ok {
@@ -498,7 +498,7 @@ func TestInstallPluginWritesFilesAndUpdatesManifest(t *testing.T) {
 			{Path: "src/index.js", Content: "console.log('hello');"},
 		},
 	}
-	if _, err := manager.Install(asset); err != nil {
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -518,7 +518,7 @@ func TestInstallPluginWritesFilesAndUpdatesManifest(t *testing.T) {
 		t.Fatalf("installed_plugins.json nezmiňuje plugin")
 	}
 
-	if _, err := manager.Uninstall(asset); err != nil {
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if exists(pluginRoot) {

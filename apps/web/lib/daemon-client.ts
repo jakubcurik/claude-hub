@@ -2,6 +2,7 @@ import type {
   AssetDiff,
   CatalogAsset,
   DaemonHello,
+  InstallOptions,
   InstallPreview,
   LocalAsset,
   LocalAssetExport,
@@ -32,25 +33,25 @@ export class DaemonClient {
     return response.state;
   }
 
-  async installPreview(asset: CatalogAsset): Promise<InstallPreview> {
+  async installPreview(asset: CatalogAsset, options: InstallOptions = {}): Promise<InstallPreview> {
     return this.request<InstallPreview>("/v1/install-preview", {
       method: "POST",
-      body: { asset }
+      body: { asset, options }
     });
   }
 
-  async install(asset: CatalogAsset): Promise<LocalAssetState> {
+  async install(asset: CatalogAsset, options: InstallOptions = {}): Promise<LocalAssetState> {
     const response = await this.request<{ state: LocalAssetState }>("/v1/install", {
       method: "POST",
-      body: { asset }
+      body: { asset, options }
     });
     return response.state;
   }
 
-  async uninstall(asset: CatalogAsset): Promise<LocalAssetState> {
+  async uninstall(asset: CatalogAsset, options: InstallOptions = {}): Promise<LocalAssetState> {
     const response = await this.request<{ state: LocalAssetState }>("/v1/uninstall", {
       method: "POST",
-      body: { asset }
+      body: { asset, options }
     });
     return response.state;
   }
@@ -62,10 +63,14 @@ export class DaemonClient {
     });
   }
 
-  async setEnabled(asset: CatalogAsset, enabled: boolean): Promise<LocalAssetState> {
+  async setEnabled(
+    asset: CatalogAsset,
+    enabled: boolean,
+    options: InstallOptions = {}
+  ): Promise<LocalAssetState> {
     const response = await this.request<{ state: LocalAssetState }>("/v1/set-enabled", {
       method: "POST",
-      body: { asset, enabled }
+      body: { asset, enabled, options }
     });
     return response.state;
   }

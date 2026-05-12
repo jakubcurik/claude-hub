@@ -145,28 +145,32 @@ func (m *Manager) State(catalog []CatalogAsset) ([]LocalAssetState, error) {
 	return states, nil
 }
 
-func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
+func (m *Manager) PreviewInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return InstallPreview{}, err
 	}
 
 	asset = normalizeAsset(asset)
+	opts = opts.Normalize()
 	if err := validateSupported(asset); err != nil {
+		return InstallPreview{}, err
+	}
+	if err := validateInstallOptions(opts); err != nil {
 		return InstallPreview{}, err
 	}
 
 	switch asset.Type {
 	case AssetTypeMCP:
-		return m.previewMCPInstall(asset)
+		return m.previewMCPInstall(asset, opts)
 	case AssetTypeHook:
-		return m.previewHookInstall(asset)
+		return m.previewHookInstall(asset, opts)
 	case AssetTypePlugin:
-		return m.previewPluginInstall(asset)
+		return m.previewPluginInstall(asset, opts)
 	case AssetTypeConfig:
-		return m.previewConfigInstall(asset)
+		return m.previewConfigInstall(asset, opts)
 	}
 
-	paths := m.paths(asset)
+	paths := m.pathsForScope(asset, opts)
 	operations := make([]InstallOperation, 0, 3)
 	if exists(paths.TargetFile) || exists(paths.DisabledFile) {
 		operations = append(operations, InstallOperation{
@@ -204,8 +208,8 @@ func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
 	}, nil
 }
 
-func (m *Manager) previewConfigInstall(asset CatalogAsset) (InstallPreview, error) {
-	paths := m.paths(asset)
+func (m *Manager) previewConfigInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
+	paths := m.pathsForScope(asset, opts)
 	if _, err := extractConfigSectionFromAsset(asset, asset.Slug); err != nil {
 		return InstallPreview{}, err
 	}
@@ -246,8 +250,8 @@ func (m *Manager) previewConfigInstall(asset CatalogAsset) (InstallPreview, erro
 	}, nil
 }
 
-func (m *Manager) previewMCPInstall(asset CatalogAsset) (InstallPreview, error) {
-	paths := m.paths(asset)
+func (m *Manager) previewMCPInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
+	paths := m.pathsForScope(asset, opts)
 	servers, err := extractMCPServersFromAsset(asset)
 	if err != nil {
 		return InstallPreview{}, err
@@ -297,8 +301,8 @@ func (m *Manager) previewMCPInstall(asset CatalogAsset) (InstallPreview, error) 
 	}, nil
 }
 
-func (m *Manager) previewHookInstall(asset CatalogAsset) (InstallPreview, error) {
-	paths := m.paths(asset)
+func (m *Manager) previewHookInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
+	paths := m.pathsForScope(asset, opts)
 	hookEntries, err := extractHookEntriesFromAsset(asset)
 	if err != nil {
 		return InstallPreview{}, err
@@ -334,8 +338,8 @@ func (m *Manager) previewHookInstall(asset CatalogAsset) (InstallPreview, error)
 	}, nil
 }
 
-func (m *Manager) previewPluginInstall(asset CatalogAsset) (InstallPreview, error) {
-	paths := m.paths(asset)
+func (m *Manager) previewPluginInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
+	paths := m.pathsForScope(asset, opts)
 	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
 	operations := []InstallOperation{
 		{
@@ -390,13 +394,17 @@ func sortedHookEventKeys(m map[string][]json.RawMessage) []string {
 	return keys
 }
 
-func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
+func (m *Manager) Install(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return LocalAssetState{}, err
 	}
 
 	asset = normalizeAsset(asset)
+	opts = opts.Normalize()
 	if err := validateSupported(asset); err != nil {
+		return LocalAssetState{}, err
+	}
+	if err := validateInstallOptions(opts); err != nil {
 		return LocalAssetState{}, err
 	}
 
@@ -406,16 +414,16 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 
 	switch asset.Type {
 	case AssetTypeMCP:
-		return m.installMCP(asset)
+		return m.installMCP(asset, opts)
 	case AssetTypeHook:
-		return m.installHook(asset)
+		return m.installHook(asset, opts)
 	case AssetTypePlugin:
-		return m.installPlugin(asset)
+		return m.installPlugin(asset, opts)
 	case AssetTypeConfig:
-		return m.installConfig(asset)
+		return m.installConfig(asset, opts)
 	}
 
-	paths := m.paths(asset)
+	paths := m.pathsForScope(asset, opts)
 	backupPath, err := m.backup(paths, asset)
 	if err != nil {
 		return LocalAssetState{}, err
@@ -446,6 +454,8 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 		Fingerprint:        fingerprint(asset),
 		ContentFingerprint: shaText(string(content)),
 		BackupPath:         backupPath,
+		Scope:              opts.Scope,
+		ProjectPath:        opts.ProjectPath,
 	}
 
 	if err := writeJSON(paths.Manifest, record); err != nil {
@@ -456,8 +466,8 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) installMCP(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) installMCP(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	servers, err := extractMCPServersFromAsset(asset)
 	if err != nil {
 		return LocalAssetState{}, err
@@ -504,6 +514,8 @@ func (m *Manager) installMCP(asset CatalogAsset) (LocalAssetState, error) {
 		BackupPath:         backupPath,
 		MCPServerKeys:      addedKeys,
 		ContentSnapshots:   serializeRawMap(previous),
+		Scope:              opts.Scope,
+		ProjectPath:        opts.ProjectPath,
 	}
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
@@ -513,8 +525,8 @@ func (m *Manager) installMCP(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) installHook(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) installHook(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	hookEntries, err := extractHookEntriesFromAsset(asset)
 	if err != nil {
 		return LocalAssetState{}, err
@@ -559,6 +571,8 @@ func (m *Manager) installHook(asset CatalogAsset) (LocalAssetState, error) {
 		ContentFingerprint: shaText(readText(paths.TargetFile)),
 		BackupPath:         backupPath,
 		HookEventEntries:   indexMap,
+		Scope:              opts.Scope,
+		ProjectPath:        opts.ProjectPath,
 	}
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
@@ -568,8 +582,8 @@ func (m *Manager) installHook(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) installConfig(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) installConfig(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	sectionKey := asset.Slug
 	sectionValue, err := extractConfigSectionFromAsset(asset, sectionKey)
 	if err != nil {
@@ -607,6 +621,8 @@ func (m *Manager) installConfig(asset CatalogAsset) (LocalAssetState, error) {
 		ContentFingerprint: shaText(readText(paths.TargetFile)),
 		BackupPath:         backupPath,
 		ContentSnapshots:   snapshots,
+		Scope:              opts.Scope,
+		ProjectPath:        opts.ProjectPath,
 	}
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
@@ -615,8 +631,8 @@ func (m *Manager) installConfig(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) installPlugin(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) installPlugin(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
 
 	backupPath, err := m.backup(paths, asset)
@@ -662,6 +678,8 @@ func (m *Manager) installPlugin(asset CatalogAsset) (LocalAssetState, error) {
 		ContentFingerprint: shaText(readText(paths.TargetFile)),
 		BackupPath:         backupPath,
 		PluginEntries:      []string{"user:" + pluginKey},
+		Scope:              opts.Scope,
+		ProjectPath:        opts.ProjectPath,
 	}
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
@@ -673,8 +691,8 @@ func (m *Manager) installPlugin(asset CatalogAsset) (LocalAssetState, error) {
 
 // toggleMergeAsset pro MCP / hook přesune položky mezi aktivním dokumentem a "disabled stash"
 // uloženou v `.claude-hub/disabled/<type>/<slug>.json`.
-func (m *Manager) toggleMergeAsset(asset CatalogAsset, enabled bool) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) toggleMergeAsset(asset CatalogAsset, enabled bool, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil {
 		return LocalAssetState{}, errors.New("položku nelze přepnout — chybí Hub manifest")
@@ -901,13 +919,17 @@ func serializeRawMap(m map[string]json.RawMessage) map[string]string {
 	return result
 }
 
-func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState, error) {
+func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool, opts InstallOptions) (LocalAssetState, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return LocalAssetState{}, err
 	}
 
 	asset = normalizeAsset(asset)
+	opts = opts.Normalize()
 	if err := validateSupported(asset); err != nil {
+		return LocalAssetState{}, err
+	}
+	if err := validateInstallOptions(opts); err != nil {
 		return LocalAssetState{}, err
 	}
 
@@ -916,10 +938,10 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState,
 	defer lock.Unlock()
 
 	if asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig {
-		return m.toggleMergeAsset(asset, enabled)
+		return m.toggleMergeAsset(asset, enabled, opts)
 	}
 
-	paths := m.paths(asset)
+	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil && !exists(paths.TargetFile) && !exists(paths.DisabledFile) {
 		return LocalAssetState{}, errors.New("položka není nainstalovaná")
@@ -967,13 +989,17 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState,
 
 // Uninstall odstraní lokální položku a smaže manifest. Pro merge-style typy
 // (MCP, hook) vrátí pouze přidané položky a zachová zbytek dokumentu.
-func (m *Manager) Uninstall(asset CatalogAsset) (LocalAssetState, error) {
+func (m *Manager) Uninstall(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return LocalAssetState{}, err
 	}
 
 	asset = normalizeAsset(asset)
+	opts = opts.Normalize()
 	if err := validateSupported(asset); err != nil {
+		return LocalAssetState{}, err
+	}
+	if err := validateInstallOptions(opts); err != nil {
 		return LocalAssetState{}, err
 	}
 
@@ -983,16 +1009,16 @@ func (m *Manager) Uninstall(asset CatalogAsset) (LocalAssetState, error) {
 
 	switch asset.Type {
 	case AssetTypeMCP:
-		return m.uninstallMCP(asset)
+		return m.uninstallMCP(asset, opts)
 	case AssetTypeHook:
-		return m.uninstallHook(asset)
+		return m.uninstallHook(asset, opts)
 	case AssetTypePlugin:
-		return m.uninstallPlugin(asset)
+		return m.uninstallPlugin(asset, opts)
 	case AssetTypeConfig:
-		return m.uninstallConfig(asset)
+		return m.uninstallConfig(asset, opts)
 	}
 
-	paths := m.paths(asset)
+	paths := m.pathsForScope(asset, opts)
 	if !exists(paths.TargetFile) && !exists(paths.DisabledFile) && !exists(paths.Manifest) {
 		return LocalAssetState{}, errors.New("položka není nainstalovaná")
 	}
@@ -1009,8 +1035,8 @@ func (m *Manager) Uninstall(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) uninstallMCP(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) uninstallMCP(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil {
 		return LocalAssetState{}, errors.New("položka MCP není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
@@ -1042,8 +1068,8 @@ func (m *Manager) uninstallMCP(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) uninstallConfig(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) uninstallConfig(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil {
 		return LocalAssetState{}, errors.New("config položka není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
@@ -1071,8 +1097,8 @@ func (m *Manager) uninstallConfig(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) uninstallHook(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) uninstallHook(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil {
 		return LocalAssetState{}, errors.New("hook položka není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
@@ -1110,8 +1136,8 @@ func (m *Manager) uninstallHook(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) uninstallPlugin(asset CatalogAsset) (LocalAssetState, error) {
-	paths := m.paths(asset)
+func (m *Manager) uninstallPlugin(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
 	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
 
 	if _, err := m.backup(paths, asset); err != nil {
@@ -1965,54 +1991,93 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 		}, nil
 	}
 
-	paths := m.paths(asset)
-	record, _ := readManifest(paths.Manifest)
-	targetExists := exists(paths.TargetFile)
-	disabledExists := exists(paths.DisabledFile)
-
+	scopes := m.collectInstalledScopes(asset)
 	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig
-	installed := false
-	enabled := false
-	if mergeType {
-		installed = record != nil
+
+	scopeStates := make([]InstallScopeState, 0, len(scopes))
+	anyInstalled := false
+	anyEnabled := false
+	anyLocalChanges := false
+	anyUpdateAvailable := false
+	managedByHub := false
+	primaryLocalVersion := ""
+
+	for _, opts := range scopes {
+		paths := m.pathsForScope(asset, opts)
+		record, _ := readManifest(paths.Manifest)
 		if record != nil {
-			enabled = record.Enabled
+			managedByHub = true
 		}
-	} else {
-		installed = targetExists || disabledExists
-		enabled = targetExists
-	}
-	matchedLocalAsset, hasLocalMatch := localIndex[assetIdentityKey(asset.Type, asset.Slug)]
-	if !installed && hasLocalMatch {
-		installed = true
-		enabled = true
-	}
-	localVersion := ""
-	if record != nil {
-		localVersion = record.Version
-	}
+		targetExists := exists(paths.TargetFile)
+		disabledExists := exists(paths.DisabledFile)
 
-	localChanges := false
-	if installed && record != nil && record.ContentFingerprint != "" {
-		content := ""
-		if enabled {
-			content = readText(paths.TargetFile)
+		installed := false
+		enabled := false
+		if mergeType {
+			installed = record != nil
+			if record != nil {
+				enabled = record.Enabled
+			}
 		} else {
-			content = readText(paths.DisabledFile)
+			installed = targetExists || disabledExists
+			enabled = targetExists
 		}
-		localChanges = shaText(content) != record.ContentFingerprint
+		if !installed {
+			continue
+		}
+
+		localVersion := ""
+		if record != nil {
+			localVersion = record.Version
+		}
+		localChanges := false
+		if record != nil && record.ContentFingerprint != "" {
+			content := ""
+			if enabled {
+				content = readText(paths.TargetFile)
+			} else {
+				content = readText(paths.DisabledFile)
+			}
+			localChanges = shaText(content) != record.ContentFingerprint
+		}
+		updateAvailable := localVersion != "" && localVersion != asset.Version
+
+		scopeStates = append(scopeStates, InstallScopeState{
+			Scope:           opts.Scope,
+			ProjectPath:     opts.ProjectPath,
+			ProjectName:     baseName(opts.ProjectPath),
+			Installed:       installed,
+			Enabled:         enabled,
+			ManagedByHub:    record != nil,
+			LocalVersion:    localVersion,
+			LocalChanges:    localChanges,
+			UpdateAvailable: updateAvailable,
+		})
+
+		anyInstalled = anyInstalled || installed
+		anyEnabled = anyEnabled || enabled
+		anyLocalChanges = anyLocalChanges || localChanges
+		anyUpdateAvailable = anyUpdateAvailable || updateAvailable
+		if primaryLocalVersion == "" {
+			primaryLocalVersion = localVersion
+		}
 	}
 
-	updateAvailable := installed && localVersion != "" && localVersion != asset.Version
+	matchedLocalAsset, hasLocalMatch := localIndex[assetIdentityKey(asset.Type, asset.Slug)]
+	if !anyInstalled && hasLocalMatch {
+		anyInstalled = true
+		anyEnabled = true
+	}
+
 	state := "not_installed"
 	switch {
-	case localChanges:
+	case anyLocalChanges:
 		state = "local_changes"
-	case updateAvailable:
+	case anyUpdateAvailable:
 		state = "update_available"
-	case enabled:
+	case anyEnabled:
 		state = "enabled"
-	case installed:
+	case anyInstalled:
 		state = "disabled"
 	}
 
@@ -2021,15 +2086,47 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 		Type:            asset.Type,
 		Slug:            asset.Slug,
 		State:           state,
-		Installed:       installed,
-		Enabled:         enabled,
-		ManagedByHub:    record != nil,
-		LocalVersion:    localVersion,
+		Installed:       anyInstalled,
+		Enabled:         anyEnabled,
+		ManagedByHub:    managedByHub,
+		LocalVersion:    primaryLocalVersion,
 		CatalogVersion:  asset.Version,
-		LocalChanges:    localChanges,
-		UpdateAvailable: updateAvailable,
-		Warnings:        stateWarnings(asset, matchedLocalAsset, hasLocalMatch && record == nil, record != nil && !installed),
+		LocalChanges:    anyLocalChanges,
+		UpdateAvailable: anyUpdateAvailable,
+		Warnings:        stateWarnings(asset, matchedLocalAsset, hasLocalMatch && !managedByHub, managedByHub && !anyInstalled),
+		Scopes:          scopeStates,
 	}, nil
+}
+
+// collectInstalledScopes prochází installed/ adresář a vrátí InstallOptions
+// pro každý manifest, který odpovídá danému (type, slug). Manifest si scope
+// pamatuje uvnitř (Scope + ProjectPath fields).
+func (m *Manager) collectInstalledScopes(asset CatalogAsset) []InstallOptions {
+	prefix := string(asset.Type) + "-" + asset.Slug + "__"
+	suffix := ".json"
+	dir := filepath.Join(m.HubHome, "installed")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	scopes := make([]InstallOptions, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		record, err := readManifest(filepath.Join(dir, name))
+		if err != nil || record == nil {
+			continue
+		}
+		scope := record.Scope
+		if scope == "" {
+			scope = "user"
+		}
+		scopes = append(scopes, InstallOptions{Scope: scope, ProjectPath: record.ProjectPath})
+	}
+	return scopes
 }
 
 func (m *Manager) localInstalledIndex() (map[string]LocalAsset, error) {
@@ -2068,70 +2165,118 @@ func stateWarnings(asset CatalogAsset, localAsset LocalAsset, localMatchWithoutM
 	return warnings
 }
 
+// paths vrací cesty pro výchozí user-scope install. Zachováno pro detection
+// codepaths, které pracují čistě s user-level assety.
 func (m *Manager) paths(asset CatalogAsset) assetPaths {
-	manifestPath := filepath.Join(m.HubHome, "installed", string(asset.Type)+"-"+asset.Slug+".json")
+	return m.pathsForScope(asset, InstallOptions{Scope: "user"})
+}
+
+// pathsForScope vrací assetPaths podle vybraného scope.
+// User scope cílí na ~/.claude/..., project scope na <projectPath>/.claude/...
+// Manifest, disabled stash a backup adresáře jsou stejně izolované per scope.
+func (m *Manager) pathsForScope(asset CatalogAsset, opts InstallOptions) assetPaths {
+	opts = opts.Normalize()
+	manifestPath := m.manifestPath(asset, opts)
+	stashID := scopedStashID(opts, asset.Slug)
+	isProject := opts.Scope == "project" && opts.ProjectPath != ""
+	base := m.ClaudeHome
+	if isProject {
+		base = filepath.Join(opts.ProjectPath, ".claude")
+	}
+
 	switch asset.Type {
 	case AssetTypeSkill:
 		return assetPaths{
-			TargetRoot:   filepath.Join(m.ClaudeHome, "skills", asset.Slug),
-			TargetFile:   filepath.Join(m.ClaudeHome, "skills", asset.Slug, "SKILL.md"),
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "skills", asset.Slug),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "skills", asset.Slug, "SKILL.md"),
+			TargetRoot:   filepath.Join(base, "skills", asset.Slug),
+			TargetFile:   filepath.Join(base, "skills", asset.Slug, "SKILL.md"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "skills", stashID),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "skills", stashID, "SKILL.md"),
 			Manifest:     manifestPath,
 		}
 	case AssetTypeMCP:
-		// Primární cíl je user-level ~/.claude.json (kam CLI ukládá MCP servery).
-		// Pokud uživatel nemá ~/.claude.json (čerstvá instalace nebo jen .mcp.json),
-		// zapisujeme do legacy ~/.claude/.mcp.json.
-		target := m.userClaudeJsonPath()
-		if !exists(target) {
-			target = filepath.Join(m.ClaudeHome, ".mcp.json")
+		var target string
+		if isProject {
+			target = filepath.Join(opts.ProjectPath, ".mcp.json")
+		} else {
+			target = m.userClaudeJsonPath()
+			if !exists(target) {
+				target = filepath.Join(m.ClaudeHome, ".mcp.json")
+			}
 		}
 		return assetPaths{
 			TargetRoot:   target,
 			TargetFile:   target,
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "mcp", asset.Slug+".json"),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "mcp", asset.Slug+".json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "mcp", stashID+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "mcp", stashID+".json"),
 			Manifest:     manifestPath,
 		}
 	case AssetTypeHook:
-		target := filepath.Join(m.ClaudeHome, "settings.json")
+		target := filepath.Join(base, "settings.json")
 		return assetPaths{
 			TargetRoot:   target,
 			TargetFile:   target,
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "hooks", asset.Slug+".json"),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "hooks", asset.Slug+".json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "hooks", stashID+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "hooks", stashID+".json"),
 			Manifest:     manifestPath,
 		}
 	case AssetTypePlugin:
-		root := filepath.Join(m.ClaudeHome, "plugins", asset.Slug)
+		root := filepath.Join(base, "plugins", asset.Slug)
 		return assetPaths{
 			TargetRoot:   root,
 			TargetFile:   filepath.Join(root, "plugin.json"),
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "plugins", asset.Slug),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "plugins", asset.Slug, "plugin.json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "plugins", stashID),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "plugins", stashID, "plugin.json"),
 			Manifest:     manifestPath,
 		}
 	case AssetTypeConfig:
-		// Config asset merguje jednu sekci do ~/.claude/settings.json.
-		// Slug nese název sekce (env, model, statusLine, ...).
-		target := filepath.Join(m.ClaudeHome, "settings.json")
+		target := filepath.Join(base, "settings.json")
 		return assetPaths{
 			TargetRoot:   target,
 			TargetFile:   target,
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug+".json"),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug+".json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "configs", stashID+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "configs", stashID+".json"),
 			Manifest:     manifestPath,
 		}
 	}
 
 	return assetPaths{
-		TargetRoot:   filepath.Join(m.ClaudeHome, "commands", asset.Slug+".md"),
-		TargetFile:   filepath.Join(m.ClaudeHome, "commands", asset.Slug+".md"),
-		DisabledRoot: filepath.Join(m.HubHome, "disabled", "commands", asset.Slug+".md"),
-		DisabledFile: filepath.Join(m.HubHome, "disabled", "commands", asset.Slug+".md"),
+		TargetRoot:   filepath.Join(base, "commands", asset.Slug+".md"),
+		TargetFile:   filepath.Join(base, "commands", asset.Slug+".md"),
+		DisabledRoot: filepath.Join(m.HubHome, "disabled", "commands", stashID+".md"),
+		DisabledFile: filepath.Join(m.HubHome, "disabled", "commands", stashID+".md"),
 		Manifest:     manifestPath,
 	}
+}
+
+// manifestPath vrátí cestu k manifestu konkrétní instalace.
+// Soubory mají suffix __user nebo __proj-<projektSlug>, aby v adresáři
+// installed/ mohly žít manifesty různých scope nezávisle.
+func (m *Manager) manifestPath(asset CatalogAsset, opts InstallOptions) string {
+	return filepath.Join(m.HubHome, "installed", manifestFilename(asset, opts))
+}
+
+func manifestFilename(asset CatalogAsset, opts InstallOptions) string {
+	opts = opts.Normalize()
+	suffix := manifestScopeSuffix(opts)
+	return fmt.Sprintf("%s-%s__%s.json", asset.Type, asset.Slug, suffix)
+}
+
+func manifestScopeSuffix(opts InstallOptions) string {
+	if opts.Scope == "project" && opts.ProjectPath != "" {
+		return "proj-" + projectSlugFromPath(opts.ProjectPath)
+	}
+	return "user"
+}
+
+// scopedStashID vrátí identifikátor pro disabled/backup adresáře, který je
+// jedinečný napříč scope (aby disabled user-level a project-level kopie
+// nekolidovaly).
+func scopedStashID(opts InstallOptions, slug string) string {
+	suffix := manifestScopeSuffix(opts)
+	if suffix == "user" {
+		return slug
+	}
+	return suffix + "-" + slug
 }
 
 func (m *Manager) backup(paths assetPaths, asset CatalogAsset) (string, error) {
@@ -2174,6 +2319,29 @@ func normalizeAsset(asset CatalogAsset) CatalogAsset {
 		asset.Version = "0.1.0"
 	}
 	return asset
+}
+
+// validateInstallOptions ověří, že volba scope je smysluplná. Project scope
+// vyžaduje neprázdný projectPath, který existuje jako adresář.
+func validateInstallOptions(opts InstallOptions) error {
+	switch opts.Scope {
+	case "user", "":
+		return nil
+	case "project":
+		if strings.TrimSpace(opts.ProjectPath) == "" {
+			return errors.New("project scope vyžaduje cestu k projektu")
+		}
+		info, err := os.Stat(opts.ProjectPath)
+		if err != nil {
+			return fmt.Errorf("cesta k projektu %q neexistuje: %w", opts.ProjectPath, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("cesta k projektu %q není adresář", opts.ProjectPath)
+		}
+		return nil
+	default:
+		return fmt.Errorf("neznámý install scope %q", opts.Scope)
+	}
 }
 
 func validateSupported(asset CatalogAsset) error {

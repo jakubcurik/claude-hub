@@ -38,19 +38,55 @@ type CatalogAsset struct {
 	Files       []AssetFile `json:"files"`
 }
 
+// InstallOptions určuje cílový scope pro install/uninstall/enable operace.
+// Scope je "user" (default) nebo "project". Pro project je nutné zadat ProjectPath
+// (absolutní cesta ke kořeni projektu, který obsahuje .claude/ adresář).
+type InstallOptions struct {
+	Scope       string `json:"scope,omitempty"`
+	ProjectPath string `json:"projectPath,omitempty"`
+}
+
+// Normalize vrátí copy s výchozím scope "user" pokud není zadaný.
+func (o InstallOptions) Normalize() InstallOptions {
+	scope := o.Scope
+	if scope == "" {
+		scope = "user"
+	}
+	return InstallOptions{Scope: scope, ProjectPath: o.ProjectPath}
+}
+
+// InstallScopeState popisuje stav jedné konkrétní instalace položky
+// (jedna položka může být nainstalovaná v user-level i v několika projektech současně).
+type InstallScopeState struct {
+	Scope           string `json:"scope"`
+	ProjectPath     string `json:"projectPath,omitempty"`
+	ProjectName     string `json:"projectName,omitempty"`
+	Installed       bool   `json:"installed"`
+	Enabled         bool   `json:"enabled"`
+	ManagedByHub    bool   `json:"managedByHub"`
+	LocalVersion    string `json:"localVersion,omitempty"`
+	LocalChanges    bool   `json:"localChanges"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
 type LocalAssetState struct {
-	AssetID         string    `json:"assetId"`
-	Type            AssetType `json:"type"`
-	Slug            string    `json:"slug"`
-	State           string    `json:"state"`
-	Installed       bool      `json:"installed"`
-	Enabled         bool      `json:"enabled"`
-	ManagedByHub    bool      `json:"managedByHub"`
-	LocalVersion    string    `json:"localVersion,omitempty"`
-	CatalogVersion  string    `json:"catalogVersion,omitempty"`
-	LocalChanges    bool      `json:"localChanges"`
-	UpdateAvailable bool      `json:"updateAvailable"`
-	Warnings        []string  `json:"warnings"`
+	AssetID         string              `json:"assetId"`
+	Type            AssetType           `json:"type"`
+	Slug            string              `json:"slug"`
+	State           string              `json:"state"`
+	Installed       bool                `json:"installed"`
+	Enabled         bool                `json:"enabled"`
+	ManagedByHub    bool                `json:"managedByHub"`
+	LocalVersion    string              `json:"localVersion,omitempty"`
+	CatalogVersion  string              `json:"catalogVersion,omitempty"`
+	LocalChanges    bool                `json:"localChanges"`
+	UpdateAvailable bool                `json:"updateAvailable"`
+	Warnings        []string            `json:"warnings"`
+	// Scopes popisuje stav instalace v každém scope (user + projekty), kde Hub
+	// našel manifest nebo lokální položku. Top-level pole jsou agregace
+	// (Installed = jakýkoli scope nainstalovaný, Enabled = jakýkoli zapnutý)
+	// kvůli zpětné kompatibilitě.
+	Scopes []InstallScopeState `json:"scopes,omitempty"`
 }
 
 type InstallOperation struct {
@@ -108,6 +144,8 @@ type manifest struct {
 	Fingerprint        string    `json:"fingerprint"`
 	ContentFingerprint string    `json:"contentFingerprint"`
 	BackupPath         string    `json:"backupPath,omitempty"`
+	Scope              string    `json:"scope,omitempty"`
+	ProjectPath        string    `json:"projectPath,omitempty"`
 
 	// Snapshot pro merge-style assety (MCP, hook). Umožňuje při disable/uninstall
 	// vrátit jen položku, kterou Hub přidal, a zachovat ostatní.

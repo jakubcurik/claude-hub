@@ -27,12 +27,14 @@ type stateRequest struct {
 }
 
 type assetRequest struct {
-	Asset claudecode.CatalogAsset `json:"asset"`
+	Asset   claudecode.CatalogAsset  `json:"asset"`
+	Options claudecode.InstallOptions `json:"options"`
 }
 
 type enabledRequest struct {
-	Asset   claudecode.CatalogAsset `json:"asset"`
-	Enabled bool                    `json:"enabled"`
+	Asset   claudecode.CatalogAsset  `json:"asset"`
+	Enabled bool                     `json:"enabled"`
+	Options claudecode.InstallOptions `json:"options"`
 }
 
 type localAssetExportRequest struct {
@@ -135,7 +137,7 @@ func (s *Server) handleInstallPreview(response http.ResponseWriter, request *htt
 	if !decodeBody(response, request, &body) {
 		return
 	}
-	preview, err := s.manager.PreviewInstall(body.Asset)
+	preview, err := s.manager.PreviewInstall(body.Asset, body.Options)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
@@ -148,7 +150,7 @@ func (s *Server) handleInstall(response http.ResponseWriter, request *http.Reque
 	if !decodeBody(response, request, &body) {
 		return
 	}
-	state, err := s.manager.Install(body.Asset)
+	state, err := s.manager.Install(body.Asset, body.Options)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
@@ -174,7 +176,7 @@ func (s *Server) handleUninstall(response http.ResponseWriter, request *http.Req
 	if !decodeBody(response, request, &body) {
 		return
 	}
-	state, err := s.manager.Uninstall(body.Asset)
+	state, err := s.manager.Uninstall(body.Asset, body.Options)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
@@ -187,7 +189,7 @@ func (s *Server) handleSetEnabled(response http.ResponseWriter, request *http.Re
 	if !decodeBody(response, request, &body) {
 		return
 	}
-	state, err := s.manager.SetEnabled(body.Asset, body.Enabled)
+	state, err := s.manager.SetEnabled(body.Asset, body.Enabled, body.Options)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
