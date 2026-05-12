@@ -318,6 +318,167 @@ func TestSplitMcpServerPath(t *testing.T) {
 	}
 }
 
+func TestSettingsConfigAssetsDetectsWhitelistedSections(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	manager := NewManager(t.TempDir())
+	if err := manager.EnsureBaseDirs(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	settingsPath := filepath.Join(manager.ClaudeHome, "settings.json")
+	content := `{
+  "env": {"FOO": "bar"},
+  "model": "claude-opus-4-7",
+  "permissions": {"allow": []},
+  "apiKeyHelper": "/personal/path",
+  "hooks": {"PreToolUse": []}
+}`
+	if err := os.WriteFile(settingsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	assets, err := manager.LocalAssets()
+	if err != nil {
+		t.Fatalf("local: %v", err)
+	}
+
+	configBySlug := map[string]LocalAsset{}
+	for _, a := range assets {
+		if a.Type == AssetTypeConfig {
+			configBySlug[a.Slug] = a
+		}
+	}
+
+	if _, ok := configBySlug["env"]; !ok {
+		t.Fatalf("env nebylo detekováno")
+	}
+	if _, ok := configBySlug["model"]; !ok {
+		t.Fatalf("model nebyl detekován")
+	}
+	if _, ok := configBySlug["permissions"]; ok {
+		t.Fatalf("permissions nemělo být na whitelistu")
+	}
+	if _, ok := configBySlug["apiKeyHelper"]; ok {
+		t.Fatalf("apiKeyHelper nemělo být na whitelistu")
+	}
+}
+
+func TestInstallConfigMergesSectionAndPreservesOthers(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	manager := NewManager(t.TempDir())
+	if err := manager.EnsureBaseDirs(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	settingsPath := filepath.Join(manager.ClaudeHome, "settings.json")
+	existing := `{
+  "env": {"USER_VAR": "keep-me"},
+  "permissions": {"allow": ["personal"]},
+  "model": "old-model"
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	asset := CatalogAsset{
+		ID:      "config:model",
+		Type:    AssetTypeConfig,
+		Slug:    "model",
+		Name:    "Doporučený model",
+		Version: "1.0.0",
+		Risk:    RiskMedium,
+		Files: []AssetFile{{
+			Path:    "settings.model.json",
+			Content: `{"model": "claude-opus-4-7"}`,
+		}},
+	}
+
+	if _, err := manager.Install(asset); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	bytes, _ := os.ReadFile(settingsPath)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(bytes, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if string(doc["model"]) != `"claude-opus-4-7"` {
+		t.Fatalf("model se nepřepsal: %s", doc["model"])
+	}
+	if _, ok := doc["env"]; !ok {
+		t.Fatalf("env byl ztracen")
+	}
+	if _, ok := doc["permissions"]; !ok {
+		t.Fatalf("permissions byly ztraceny")
+	}
+
+	// Uninstall vrátí původní model
+	if _, err := manager.Uninstall(asset); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	bytes, _ = os.ReadFile(settingsPath)
+	_ = json.Unmarshal(bytes, &doc)
+	if string(doc["model"]) != `"old-model"` {
+		t.Fatalf("model se nevrátil na původní hodnotu: %s", doc["model"])
+	}
+}
+
+func TestToggleConfigDisableEnableRoundtrip(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	manager := NewManager(t.TempDir())
+	if err := manager.EnsureBaseDirs(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	asset := CatalogAsset{
+		ID:      "config:env",
+		Type:    AssetTypeConfig,
+		Slug:    "env",
+		Name:    "Env preset",
+		Version: "1.0.0",
+		Risk:    RiskMedium,
+		Files: []AssetFile{{
+			Path:    "settings.env.json",
+			Content: `{"env": {"ANIMATO_KEY": "ok"}}`,
+		}},
+	}
+
+	if _, err := manager.Install(asset); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	settingsPath := filepath.Join(manager.ClaudeHome, "settings.json")
+	readSections := func() map[string]json.RawMessage {
+		bytes, _ := os.ReadFile(settingsPath)
+		doc := map[string]json.RawMessage{}
+		_ = json.Unmarshal(bytes, &doc)
+		return doc
+	}
+
+	if _, ok := readSections()["env"]; !ok {
+		t.Fatalf("env sekce po install chybí")
+	}
+
+	if _, err := manager.SetEnabled(asset, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, ok := readSections()["env"]; ok {
+		t.Fatalf("env sekce by po disable měla zmizet z aktivního souboru")
+	}
+
+	if _, err := manager.SetEnabled(asset, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if _, ok := readSections()["env"]; !ok {
+		t.Fatalf("po enable se env sekce nevrátila")
+	}
+}
+
 func TestInstallPluginWritesFilesAndUpdatesManifest(t *testing.T) {
 	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
 	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")

@@ -204,6 +204,65 @@ func extractHookEntriesFromAsset(asset CatalogAsset) (map[string][]json.RawMessa
 	return result, nil
 }
 
+// settingsDoc reprezentuje settings.json jako flat mapu top-level klíčů.
+// Slouží pro sdílení jednotlivých sekcí (env, model, statusLine, ...) přes
+// AssetTypeConfig. Sekce hooks má vlastní typ a tento doc se jí netýká.
+type settingsDoc struct {
+	Sections map[string]json.RawMessage `json:"-"`
+}
+
+func readSettingsDoc(path string) (*settingsDoc, error) {
+	doc := &settingsDoc{Sections: map[string]json.RawMessage{}}
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return doc, nil
+		}
+		return nil, err
+	}
+	if len(bytes) == 0 {
+		return doc, nil
+	}
+	if err := json.Unmarshal(bytes, &doc.Sections); err != nil {
+		return nil, fmt.Errorf("nelze parsovat settings.json %s: %w", path, err)
+	}
+	return doc, nil
+}
+
+func writeSettingsDoc(path string, doc *settingsDoc) error {
+	content, err := marshalIndentSorted(doc.Sections)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(content, '\n'), 0o644)
+}
+
+// extractConfigSectionFromAsset najde v souborech assetu konkrétní sekci (podle slugu).
+// Asset může obsahovat buď obal `{"<section>": <value>}` nebo přímo `<value>`.
+func extractConfigSectionFromAsset(asset CatalogAsset, sectionKey string) (json.RawMessage, error) {
+	for _, file := range asset.Files {
+		raw := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(file.Content), &raw); err == nil {
+			if value, ok := raw[sectionKey]; ok && len(value) > 0 {
+				return value, nil
+			}
+		}
+		// Soubor je rovnou hodnota sekce
+		trimmed := strings.TrimSpace(file.Content)
+		if trimmed == "" {
+			continue
+		}
+		var probe any
+		if err := json.Unmarshal([]byte(trimmed), &probe); err == nil {
+			return json.RawMessage(trimmed), nil
+		}
+	}
+	return nil, fmt.Errorf("položka neobsahuje žádnou hodnotu pro sekci %q", sectionKey)
+}
+
 // pluginDoc reprezentuje installed_plugins.json.
 type pluginDoc struct {
 	Plugins map[string][]installedPluginEntry `json:"plugins"`

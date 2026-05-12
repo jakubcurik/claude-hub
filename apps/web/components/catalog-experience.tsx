@@ -117,11 +117,7 @@ const operationLabels: Record<InstallOperation["type"], string> = {
   disable: "Vypnout"
 };
 
-function formatState(state?: LocalAssetState, connected = false, assetType?: CatalogAsset["type"]) {
-  if (assetType && !["skill", "command"].includes(assetType)) {
-    return { label: "Zatím jen v katalogu", tone: "planned" };
-  }
-
+function formatState(state?: LocalAssetState, connected = false, _assetType?: CatalogAsset["type"]) {
   if (!connected) {
     return { label: "Počítač není připojený", tone: "offline" };
   }
@@ -1073,8 +1069,8 @@ function AssetCard({
   state?: LocalAssetState;
 }) {
   const status = formatState(state, connected, asset.type);
-  // Daemon nyní podporuje plný lifecycle pro skill, command, mcp, hook a plugin.
-  const supported = asset.type !== "config";
+  // Daemon podporuje plný lifecycle pro všechny typy (skill, command, mcp, hook, plugin, config).
+  const supported = true;
 
   return (
     <article className="asset-card">

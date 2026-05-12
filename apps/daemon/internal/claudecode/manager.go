@@ -162,6 +162,8 @@ func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
 		return m.previewHookInstall(asset)
 	case AssetTypePlugin:
 		return m.previewPluginInstall(asset)
+	case AssetTypeConfig:
+		return m.previewConfigInstall(asset)
 	}
 
 	paths := m.paths(asset)
@@ -193,6 +195,48 @@ func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
 		Risk:        RiskLow,
 	})
 
+	return InstallPreview{
+		AssetID:     asset.ID,
+		Version:     asset.Version,
+		Operations:  operations,
+		Warnings:    contentWarnings(asset.Files),
+		RequiredEnv: asset.RequiredEnv,
+	}, nil
+}
+
+func (m *Manager) previewConfigInstall(asset CatalogAsset) (InstallPreview, error) {
+	paths := m.paths(asset)
+	if _, err := extractConfigSectionFromAsset(asset, asset.Slug); err != nil {
+		return InstallPreview{}, err
+	}
+	doc, err := readSettingsDoc(paths.TargetFile)
+	if err != nil {
+		return InstallPreview{}, err
+	}
+
+	operations := make([]InstallOperation, 0, 3)
+	operations = append(operations, InstallOperation{
+		Type:        "backup",
+		Path:        paths.TargetFile,
+		Description: "Zazálohovat settings.json před úpravou.",
+		Risk:        RiskLow,
+	})
+	opType := "create"
+	if _, ok := doc.Sections[asset.Slug]; ok {
+		opType = "replace"
+	}
+	operations = append(operations, InstallOperation{
+		Type:        opType,
+		Path:        paths.TargetFile + " :: " + asset.Slug,
+		Description: fmt.Sprintf("Nastavit sekci %q v settings.json.", asset.Slug),
+		Risk:        asset.Risk,
+	})
+	operations = append(operations, InstallOperation{
+		Type:        "manifest",
+		Path:        paths.Manifest,
+		Description: "Uložit zálohu předchozí hodnoty sekce pro pozdější uninstall.",
+		Risk:        RiskLow,
+	})
 	return InstallPreview{
 		AssetID:     asset.ID,
 		Version:     asset.Version,
@@ -367,6 +411,8 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 		return m.installHook(asset)
 	case AssetTypePlugin:
 		return m.installPlugin(asset)
+	case AssetTypeConfig:
+		return m.installConfig(asset)
 	}
 
 	paths := m.paths(asset)
@@ -522,6 +568,53 @@ func (m *Manager) installHook(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
+func (m *Manager) installConfig(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	sectionKey := asset.Slug
+	sectionValue, err := extractConfigSectionFromAsset(asset, sectionKey)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	doc, err := readSettingsDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	snapshots := map[string]string{}
+	if existing, ok := doc.Sections[sectionKey]; ok {
+		snapshots["previous"] = string(existing)
+	}
+	backupPath, err := m.backupMergeArtifact(paths, asset, doc)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	doc.Sections[sectionKey] = sectionValue
+	if err := writeSettingsDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	record := manifest{
+		AssetID:            asset.ID,
+		Type:               asset.Type,
+		Slug:               asset.Slug,
+		Name:               asset.Name,
+		Version:            asset.Version,
+		Enabled:            true,
+		InstalledAt:        now,
+		Fingerprint:        fingerprint(asset),
+		ContentFingerprint: shaText(readText(paths.TargetFile)),
+		BackupPath:         backupPath,
+		ContentSnapshots:   snapshots,
+	}
+	if err := writeJSON(paths.Manifest, record); err != nil {
+		return LocalAssetState{}, err
+	}
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
 func (m *Manager) installPlugin(asset CatalogAsset) (LocalAssetState, error) {
 	paths := m.paths(asset)
 	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
@@ -596,6 +689,10 @@ func (m *Manager) toggleMergeAsset(asset CatalogAsset, enabled bool) (LocalAsset
 		if err := m.toggleHook(asset, paths, record, enabled); err != nil {
 			return LocalAssetState{}, err
 		}
+	case AssetTypeConfig:
+		if err := m.toggleConfig(asset, paths, record, enabled); err != nil {
+			return LocalAssetState{}, err
+		}
 	}
 
 	record.Enabled = enabled
@@ -663,6 +760,45 @@ func (m *Manager) toggleMCP(asset CatalogAsset, paths assetPaths, record *manife
 		return err
 	}
 	return os.WriteFile(stashPath, bytes, 0o644)
+}
+
+func (m *Manager) toggleConfig(asset CatalogAsset, paths assetPaths, record *manifest, enabled bool) error {
+	_ = record
+	doc, err := readSettingsDoc(paths.TargetFile)
+	if err != nil {
+		return err
+	}
+	sectionKey := asset.Slug
+	stashPath := paths.DisabledFile
+
+	if enabled {
+		if !exists(stashPath) {
+			return nil
+		}
+		bytes, err := os.ReadFile(stashPath)
+		if err != nil {
+			return err
+		}
+		doc.Sections[sectionKey] = json.RawMessage(bytes)
+		if err := writeSettingsDoc(paths.TargetFile, doc); err != nil {
+			return err
+		}
+		_ = os.Remove(stashPath)
+		return nil
+	}
+
+	current, ok := doc.Sections[sectionKey]
+	if !ok {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(stashPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(stashPath, []byte(current), 0o644); err != nil {
+		return err
+	}
+	delete(doc.Sections, sectionKey)
+	return writeSettingsDoc(paths.TargetFile, doc)
 }
 
 func (m *Manager) toggleHook(asset CatalogAsset, paths assetPaths, record *manifest, enabled bool) error {
@@ -779,7 +915,7 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState,
 	lock.Lock()
 	defer lock.Unlock()
 
-	if asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook {
+	if asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig {
 		return m.toggleMergeAsset(asset, enabled)
 	}
 
@@ -852,6 +988,8 @@ func (m *Manager) Uninstall(asset CatalogAsset) (LocalAssetState, error) {
 		return m.uninstallHook(asset)
 	case AssetTypePlugin:
 		return m.uninstallPlugin(asset)
+	case AssetTypeConfig:
+		return m.uninstallConfig(asset)
 	}
 
 	paths := m.paths(asset)
@@ -899,6 +1037,35 @@ func (m *Manager) uninstallMCP(asset CatalogAsset) (LocalAssetState, error) {
 		return LocalAssetState{}, err
 	}
 	_ = os.Remove(paths.Manifest)
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) uninstallConfig(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	record, _ := readManifest(paths.Manifest)
+	if record == nil {
+		return LocalAssetState{}, errors.New("config položka není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
+	}
+	doc, err := readSettingsDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	if _, err := m.backupMergeArtifact(paths, asset, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	if previous, ok := record.ContentSnapshots["previous"]; ok && previous != "" {
+		doc.Sections[asset.Slug] = json.RawMessage(previous)
+	} else {
+		delete(doc.Sections, asset.Slug)
+	}
+	if err := writeSettingsDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+	_ = os.Remove(paths.Manifest)
+	_ = os.Remove(paths.DisabledFile)
 
 	localIndex, _ := m.localInstalledIndex()
 	return m.assetState(asset, localIndex)
@@ -976,6 +1143,7 @@ func (m *Manager) LocalAssets() ([]LocalAsset, error) {
 	assets = append(assets, m.settingsHookAsset(filepath.Join(m.ClaudeHome, "settings.json"), "hook:user-settings", "Nastavení uživatelských hooků", "user", "", "")...)
 	assets = append(assets, m.pluginAssets()...)
 	assets = append(assets, m.userMcpAssets()...)
+	assets = append(assets, m.settingsConfigAssets(filepath.Join(m.ClaudeHome, "settings.json"), "user", "", "", "config:user")...)
 
 	workspaceAssets, err := m.workspaceAssets()
 	if err != nil {
@@ -1324,6 +1492,61 @@ func splitMcpServerPath(path string) (string, string, bool) {
 	return filePart, keyPart, true
 }
 
+// shareableSettingsSections obsahuje seznam sekcí settings.json, které lze
+// sdílet skrz Claude Hub. Hooks má vlastní typ a permissions/apiKeyHelper jsou
+// příliš osobní (cesty, přístupy), proto se nedetekují.
+var shareableSettingsSections = []string{
+	"env",
+	"model",
+	"statusLine",
+	"includeCoAuthoredBy",
+	"cleanupPeriodDays",
+}
+
+// settingsConfigAssets vrátí jeden LocalAsset za každou whitelistovanou sekci,
+// kterou daný settings.json obsahuje. Granularita 1 sekce = 1 sdílitelná položka.
+func (m *Manager) settingsConfigAssets(path string, scope string, projectName string, projectPath string, localIDPrefix string) []LocalAsset {
+	doc, err := readSettingsDoc(path)
+	if err != nil || doc == nil || len(doc.Sections) == 0 {
+		return nil
+	}
+	assets := make([]LocalAsset, 0)
+	for _, section := range shareableSettingsSections {
+		value, ok := doc.Sections[section]
+		if !ok || len(value) == 0 || string(value) == "null" {
+			continue
+		}
+		assets = append(assets, LocalAsset{
+			LocalAssetID: localIDPrefix + ":" + section,
+			Type:         AssetTypeConfig,
+			Slug:         section,
+			Name:         "Nastavení: " + section,
+			Path:         path + " :: " + section,
+			Scope:        scope,
+			ProjectName:  projectName,
+			ProjectPath:  projectPath,
+			ManagedByHub: false,
+			Warnings:     textWarnings(string(value)),
+		})
+	}
+	return assets
+}
+
+// splitSettingsSectionPath rozdělí cestu typu "<file> :: <sectionKey>".
+func splitSettingsSectionPath(path string) (string, string, bool) {
+	const sep = " :: "
+	idx := strings.Index(path, sep)
+	if idx < 0 {
+		return path, "", false
+	}
+	filePart := strings.TrimSpace(path[:idx])
+	keyPart := strings.TrimSpace(path[idx+len(sep):])
+	if filePart == "" || keyPart == "" {
+		return path, "", false
+	}
+	return filePart, keyPart, true
+}
+
 // userClaudeJsonPath vrací cestu k user-level .claude.json souboru, který
 // Claude Code CLI fakticky používá k uchování per-user MCP konfigurace.
 // Soubor leží vedle adresáře .claude/ (nikoli uvnitř něj).
@@ -1459,6 +1682,7 @@ func (m *Manager) workspaceClaudeDirAssets(claudeDir string, projectRoot string,
 	assets = append(assets, m.entryAssets(filepath.Join(claudeDir, "plugins"), AssetTypePlugin, "Plugin", "project", projectName, projectRoot)...)
 	assets = append(assets, m.mcpServerAssets(filepath.Join(claudeDir, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp")...)
 	assets = append(assets, m.mcpServerAssets(filepath.Join(projectRoot, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp-root")...)
+	assets = append(assets, m.settingsConfigAssets(filepath.Join(claudeDir, "settings.json"), "project", projectName, projectRoot, "project:"+projectSlug+":config")...)
 	return assets
 }
 
@@ -1505,6 +1729,29 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 		}
 		return []AssetFile{{
 			Path:    "mcp.json",
+			Content: string(content),
+		}}, nil
+	}
+	if asset.Type == AssetTypeConfig {
+		filePath, sectionKey, ok := splitSettingsSectionPath(source)
+		if !ok {
+			return nil, errors.New("config položka nemá platnou cestu k sekci")
+		}
+		doc, err := readSettingsDoc(filePath)
+		if err != nil {
+			return nil, err
+		}
+		value, exists := doc.Sections[sectionKey]
+		if !exists {
+			return nil, fmt.Errorf("sekce %q už v %s není", sectionKey, filePath)
+		}
+		payload := map[string]json.RawMessage{sectionKey: value}
+		content, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return []AssetFile{{
+			Path:    "settings." + sectionKey + ".json",
 			Content: string(content),
 		}}, nil
 	}
@@ -1619,7 +1866,7 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 	targetExists := exists(paths.TargetFile)
 	disabledExists := exists(paths.DisabledFile)
 
-	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook
+	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig
 	installed := false
 	enabled := false
 	if mergeType {
@@ -1762,12 +2009,14 @@ func (m *Manager) paths(asset CatalogAsset) assetPaths {
 			Manifest:     manifestPath,
 		}
 	case AssetTypeConfig:
-		root := filepath.Join(m.ClaudeHome, "configs", asset.Slug)
+		// Config asset merguje jednu sekci do ~/.claude/settings.json.
+		// Slug nese název sekce (env, model, statusLine, ...).
+		target := filepath.Join(m.ClaudeHome, "settings.json")
 		return assetPaths{
-			TargetRoot:   root,
-			TargetFile:   filepath.Join(root, asset.Slug+".json"),
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug, asset.Slug+".json"),
+			TargetRoot:   target,
+			TargetFile:   target,
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug+".json"),
 			Manifest:     manifestPath,
 		}
 	}
