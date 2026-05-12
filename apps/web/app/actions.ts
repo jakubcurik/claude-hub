@@ -9,8 +9,20 @@ import type {
   RiskLevel,
   SigningKey,
   Team,
-  TeamMembership
+  TeamMembership,
+  TelemetryComparison,
+  TelemetryOverview,
+  TelemetryProjectsListItem,
+  TelemetryUserSettingRow
 } from "@claude-hub/schema";
+import {
+  fetchAnalyticsComparison,
+  fetchAnalyticsOverview,
+  fetchAnalyticsProjects,
+  fetchAnalyticsUserSettings,
+  setAnalyticsUserDisabled,
+  type AnalyticsRange
+} from "@/lib/analytics-client";
 import {
   clearCurrentSession,
   getCurrentUser,
@@ -354,6 +366,32 @@ function toCatalogAsset(assetExport: LocalAssetExport, user: { id: string; email
     requiredEnv: assetExport.requiredEnv,
     files: assetExport.files
   };
+}
+
+// ────────── Analytics ──────────
+
+export async function loadAnalyticsOverview(range: AnalyticsRange): Promise<TelemetryOverview> {
+  return fetchAnalyticsOverview(range);
+}
+
+export async function loadAnalyticsComparison(
+  rangeA: AnalyticsRange,
+  rangeB: AnalyticsRange
+): Promise<TelemetryComparison> {
+  return fetchAnalyticsComparison(rangeA, rangeB);
+}
+
+export async function loadAnalyticsProjects(): Promise<TelemetryProjectsListItem[]> {
+  return fetchAnalyticsProjects();
+}
+
+export async function loadAnalyticsUserSettings(): Promise<TelemetryUserSettingRow[]> {
+  return fetchAnalyticsUserSettings();
+}
+
+export async function toggleAnalyticsUserDisabled(userId: string, disabled: boolean) {
+  await setAnalyticsUserDisabled(userId, disabled);
+  revalidatePath("/analytics/settings");
 }
 
 function riskLabel(risk: RiskLevel) {

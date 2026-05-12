@@ -6,7 +6,8 @@ import type {
   InstallPreview,
   LocalAsset,
   LocalAssetExport,
-  LocalAssetState
+  LocalAssetState,
+  TelemetryDaemonStatus
 } from "@claude-hub/schema";
 
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:17373";
@@ -86,6 +87,21 @@ export class DaemonClient {
       body: { localAssetId }
     });
     return response.asset;
+  }
+
+  async enableTelemetry(apiEndpoint: string): Promise<void> {
+    await this.request("/v1/telemetry/enable", {
+      method: "POST",
+      body: { apiEndpoint }
+    });
+  }
+
+  async disableTelemetry(): Promise<void> {
+    await this.request("/v1/telemetry/disable", { method: "POST" });
+  }
+
+  async telemetryStatus(): Promise<TelemetryDaemonStatus> {
+    return this.request<TelemetryDaemonStatus>("/v1/telemetry/status");
   }
 
   private async request<T>(

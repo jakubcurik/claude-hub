@@ -1,10 +1,24 @@
+import { redirect } from "next/navigation";
 import { CatalogExperience } from "@/components/catalog-experience";
-import { getTeam, listCollections, listSigningKeys, listTeamMembers } from "@/app/actions";
+import {
+  getTeam,
+  listCollections,
+  listSigningKeys,
+  listTeamMembers,
+  loadAnalyticsUserSettings
+} from "@/app/actions";
 import { getCurrentUser, hubTeamId } from "@/lib/hub-auth";
 import { getCatalogAssets } from "@/lib/registry-client";
-import { redirect } from "next/navigation";
+import { DaemonProvider } from "@/lib/daemon-context";
+import type { SidebarView } from "@/components/app-sidebar";
 
-export default async function Page() {
+const VALID_VIEWS: SidebarView[] = ["catalog", "local", "collections", "team", "keys"];
+
+export default async function Page({
+  searchParams
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
   const user = await getCurrentUser();
   if (!user) {
     redirect("/login");
@@ -14,7 +28,6 @@ export default async function Page() {
   const teamSummary = await getTeam();
 
   if (!teamSummary) {
-    // Uživatel přihlášený, ale není členem týmu (admin ho odebral).
     return (
       <main className="login-shell">
         <section className="login-panel">
@@ -26,35 +39,56 @@ export default async function Page() {
             </div>
           </div>
           <p>
-            Účet <strong>{user.email}</strong> není členem týmu této instance Claude Hubu. Pokud to považujete za
-            chybu, požádejte správce týmu o přidání.
+            Účet <strong>{user.email}</strong> není členem týmu této instance Claude Hubu. Pokud to
+            považujete za chybu, požádejte správce týmu o přidání.
           </p>
         </section>
       </main>
     );
   }
 
-  const [assets, collections, members, signingKeys] = await Promise.all([
+  const isOwner = teamSummary.membership.role === "owner";
+
+  const [assets, collections, members, signingKeys, telemetrySettings] = await Promise.all([
     getCatalogAssets(teamId),
     listCollections(),
     listTeamMembers(),
-    listSigningKeys()
+    listSigningKeys(),
+    isOwner ? loadAnalyticsUserSettings() : Promise.resolve(undefined)
   ]);
 
+  // Daemon volá Claude Hub API přímo (server-to-server) bez prohlížeče, takže
+  // potřebuje skutečně dostupnou URL — primárně CLAUDE_HUB_PUBLIC_API_URL,
+  // fallback na CLAUDE_HUB_API_URL (lokální deploy).
+  const telemetryApiEndpoint =
+    process.env.CLAUDE_HUB_PUBLIC_API_URL ?? process.env.CLAUDE_HUB_API_URL ?? "";
+
+  const params = await searchParams;
+  const rawView = params?.view;
+  const initialView = VALID_VIEWS.includes(rawView as SidebarView)
+    ? (rawView as SidebarView)
+    : undefined;
+
   return (
-    <CatalogExperience
-      collections={collections}
-      daemonInstall={{
-        brewPackage: process.env.CLAUDE_HUB_DAEMON_BREW_PACKAGE ?? "animato-lab/tap/claude-hub-daemon",
-        hubUrl: process.env.CLAUDE_HUB_PUBLIC_URL ?? "https://hub.animato-lab.cz",
-        wingetId: process.env.CLAUDE_HUB_DAEMON_WINGET_ID ?? "Animato.ClaudeHubDaemon"
-      }}
-      initialAssets={assets}
-      members={members}
-      membership={teamSummary.membership}
-      signingKeys={signingKeys}
-      userEmail={user.email}
-      userId={user.id}
-    />
+    <DaemonProvider telemetryApiEndpoint={telemetryApiEndpoint}>
+      <CatalogExperience
+        collections={collections}
+        daemonInstall={{
+          brewPackage:
+            process.env.CLAUDE_HUB_DAEMON_BREW_PACKAGE ?? "animato-lab/tap/claude-hub-daemon",
+          hubUrl: process.env.CLAUDE_HUB_PUBLIC_URL ?? "https://hub.animato-lab.cz",
+          wingetId: process.env.CLAUDE_HUB_DAEMON_WINGET_ID ?? "Animato.ClaudeHubDaemon"
+        }}
+        initialAssets={assets}
+        members={members}
+        membership={teamSummary.membership}
+        signingKeys={signingKeys}
+        userEmail={user.email}
+        userId={user.id}
+        teamName={teamSummary.team.name}
+        initialView={initialView}
+        telemetrySettings={telemetrySettings}
+      />
+    </DaemonProvider>
   );
 }

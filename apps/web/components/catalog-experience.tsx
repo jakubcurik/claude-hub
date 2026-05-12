@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronRight,
   CircleDot,
   Copy,
   Download,
@@ -30,27 +29,26 @@ import type {
   LocalAsset,
   LocalAssetState,
   SigningKey,
-  TeamMembership
+  TeamMembership,
+  TelemetryUserSettingRow
 } from "@claude-hub/schema";
 import {
   deleteCollection,
   generateAndRegisterSigningKey,
-  listPairedDevices,
   listTeamMembers,
   logCatalogEvent,
-  logoutAction,
   publishLocalAssetToCatalog,
-  registerPairedDevice,
   removeTeamMember,
-  revokePairedDevice,
   revokeSigningKey,
   rollbackAssetVersion,
   saveCollection,
   updateMemberRole
 } from "@/app/actions";
-import { DaemonClient } from "@/lib/daemon-client";
+import { AppSidebar, type SidebarNavItem, type SidebarView } from "@/components/app-sidebar";
+import { useDaemon } from "@/lib/daemon-context";
+import { OwnerSettings } from "@/components/analytics/owner-settings";
 
-type View = "catalog" | "local" | "collections" | "team" | "keys";
+type View = SidebarView;
 type Filter = "all" | AssetType;
 
 interface CatalogExperienceProps {
@@ -62,6 +60,11 @@ interface CatalogExperienceProps {
   signingKeys: SigningKey[];
   userEmail: string;
   userId: string;
+  teamName: string;
+  /** Initial view dle ?view= URL parametru (např. když přijdeme z /analytics). */
+  initialView?: View;
+  /** Initial seznam nastavení telemetrie pro owner sekci v Tým view. Bez tohoto se panel nezobrazí. */
+  telemetrySettings?: TelemetryUserSettingRow[];
 }
 
 interface DaemonInstallConfig {
@@ -80,10 +83,7 @@ interface ModalState {
   onConfirm: () => Promise<void>;
 }
 
-const tokenStorageKey = "claudeHubDaemonToken";
-const daemonOrigin = "http://127.0.0.1:17373";
-
-const navItems: Array<{ id: View; label: string }> = [
+const navItems: SidebarNavItem[] = [
   { id: "catalog", label: "Katalog" },
   { id: "local", label: "Tento počítač" },
   { id: "collections", label: "Sady" },
@@ -149,8 +149,12 @@ export function CatalogExperience({
   membership,
   signingKeys: initialSigningKeys,
   userEmail,
-  userId
+  userId,
+  teamName,
+  initialView,
+  telemetrySettings
 }: CatalogExperienceProps) {
+  const daemon = useDaemon();
   const [collections, setCollections] = useState(initialCollections);
   const [members, setMembers] = useState(initialMembers);
   const [signingKeys, setSigningKeys] = useState(initialSigningKeys);
@@ -159,7 +163,6 @@ export function CatalogExperience({
     asset: CatalogAsset;
     projects: KnownProject[];
   } | null>(null);
-  const [knownProjects, setKnownProjects] = useState<KnownProject[]>([]);
   const [versionsModal, setVersionsModal] = useState<{
     asset: CatalogAsset;
     versions: Array<{ version: string; publishedAt: string; publishedBy: string; signature?: string }>;
@@ -168,111 +171,75 @@ export function CatalogExperience({
     null
   );
   const isAdmin = membership.role === "owner" || membership.role === "admin";
-  const [activeView, setActiveView] = useState<View>("catalog");
+  const isOwner = membership.role === "owner";
+  const [activeView, setActiveView] = useState<View>(initialView ?? "catalog");
   const [catalogFilter, setCatalogFilter] = useState<Filter>("all");
   const [localFilter, setLocalFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
-  const [token, setToken] = useState("");
-  const [savedToken, setSavedToken] = useState("");
-  const [daemonSummary, setDaemonSummary] = useState("Lokální služba zatím nebyla zkontrolována.");
-  const [isConnected, setIsConnected] = useState(false);
   const [states, setStates] = useState<Record<string, LocalAssetState>>({});
   const [localAssets, setLocalAssets] = useState<LocalAsset[]>([]);
   const [modal, setModal] = useState<ModalState | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState("");
-  const [manualPairingOpen, setManualPairingOpen] = useState(false);
-  const [pairedDevices, setPairedDevices] = useState<
-    Array<{ tokenHash: string; label: string; claudeHome: string; lastSeenAt: string }>
-  >([]);
-  const [devicesOpen, setDevicesOpen] = useState(false);
-  const lastAutoRefreshKey = useRef("");
+  const [operationBusy, setOperationBusy] = useState(false);
+  const setBusy = setOperationBusy;
+  const lastFetchedConnectionVersion = useRef(0);
 
+  // Daemon stav teče z DaemonProvideru. Lokálně si držíme jen content state
+  // (states položek + localAssets) — ten závisí na catalog assetech, které
+  // provider nezná.
+  const {
+    client,
+    isConnected,
+    busy: daemonBusy,
+    connectionVersion,
+    refresh: refreshDaemon,
+    pairAutomatically,
+    toast,
+    showToast
+  } = daemon;
+  const busy = daemonBusy || operationBusy;
+
+  // Po každém úspěšném connect/refresh provideru natáhneme catalog data.
   useEffect(() => {
-    const stored = window.localStorage.getItem(tokenStorageKey) ?? "";
-    if (stored) {
-      setToken(stored);
-      setSavedToken(stored);
-    }
-  }, []);
-
-  const normalizedToken = savedToken.trim();
-  const client = useMemo(() => new DaemonClient(normalizedToken), [normalizedToken]);
-  const catalogRefreshKey = useMemo(() => initialAssets.map((asset) => asset.id).join("\n"), [initialAssets]);
-
-  const showToast = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2600);
-  }, []);
-
-  const refresh = useCallback(async (tokenOverride?: string) => {
-    const activeToken = tokenOverride ?? normalizedToken;
-    const activeClient = tokenOverride === undefined ? client : new DaemonClient(activeToken);
-
-    setBusy(true);
-    try {
-      const hello = await activeClient.hello();
-      if (!activeToken) {
-        setIsConnected(false);
-        setDaemonSummary(`Služba běží v ${hello.claudeHome}. Pro zobrazení stavu ji spárujte.`);
-        return;
-      }
-
-      const [nextStates, nextLocalAssets] = await Promise.all([
-        activeClient.state(initialAssets),
-        activeClient.localAssets()
-      ]);
-
-      void registerPairedDevice({
-        tokenHash: await sha256(activeToken),
-        label: deviceLabel(hello.claudeHome),
-        claudeHome: hello.claudeHome
-      }).catch(() => undefined);
-
-      setStates(Object.fromEntries(nextStates.map((item) => [item.assetId, item])));
-      setLocalAssets(nextLocalAssets.map(normalizeLocalAsset));
-      setKnownProjects(hello.knownProjects ?? []);
-      setIsConnected(true);
-      setDaemonSummary(`Připojeno k Claude Code v ${hello.claudeHome}.`);
-    } catch (error) {
-      setIsConnected(false);
-      setStates({});
-      setLocalAssets([]);
-      setKnownProjects([]);
-      setDaemonSummary(error instanceof Error ? error.message : "Lokální služba je nedostupná.");
-    } finally {
-      setBusy(false);
-    }
-  }, [client, initialAssets, normalizedToken]);
-
-  useEffect(() => {
-    const autoRefreshKey = `${catalogRefreshKey}:${normalizedToken}`;
-    if (!normalizedToken || lastAutoRefreshKey.current === autoRefreshKey) {
+    if (!isConnected || connectionVersion === lastFetchedConnectionVersion.current) {
       return;
     }
+    lastFetchedConnectionVersion.current = connectionVersion;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [nextStates, nextLocalAssets] = await Promise.all([
+          client.state(initialAssets),
+          client.localAssets()
+        ]);
+        if (cancelled) return;
+        setStates(Object.fromEntries(nextStates.map((item) => [item.assetId, item])));
+        setLocalAssets(nextLocalAssets.map(normalizeLocalAsset));
+      } catch (error) {
+        if (cancelled) return;
+        setStates({});
+        setLocalAssets([]);
+        showToast(error instanceof Error ? error.message : "Stav katalogu se nepodařilo načíst.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, connectionVersion, initialAssets, isConnected, showToast]);
 
-    lastAutoRefreshKey.current = autoRefreshKey;
-    void refresh();
-  }, [catalogRefreshKey, normalizedToken, refresh]);
-
-  const refreshDevices = useCallback(async () => {
-    try {
-      const devices = await listPairedDevices();
-      setPairedDevices(devices);
-    } catch {
-      // ignore — UI prostě ukáže prázdný seznam
-    }
-  }, []);
-
+  // Když se daemon odpojí, vyčistíme catalog content.
   useEffect(() => {
-    void refreshDevices();
-  }, [refreshDevices, isConnected]);
+    if (!isConnected) {
+      lastFetchedConnectionVersion.current = 0;
+      setStates({});
+      setLocalAssets([]);
+    }
+  }, [isConnected]);
 
-  async function handleRevokeDevice(tokenHash: string) {
-    await revokePairedDevice(tokenHash);
-    await refreshDevices();
-    showToast("Spárování zařízení bylo zrušeno.");
-  }
+  const refresh = useCallback(async () => {
+    await refreshDaemon();
+  }, [refreshDaemon]);
+
+  const knownProjects = daemon.knownProjects;
 
   const visibleAssets = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -305,39 +272,6 @@ export function CatalogExperience({
 
   const installedCount = Object.values(states).filter((state) => state.installed).length;
   const updateCount = Object.values(states).filter((state) => state.updateAvailable).length;
-
-  async function saveToken() {
-    const nextToken = token.trim();
-    setToken(nextToken);
-    setSavedToken(nextToken);
-    window.localStorage.setItem(tokenStorageKey, nextToken);
-    await refresh(nextToken);
-  }
-
-  async function pairAutomatically() {
-    setBusy(true);
-    try {
-      await client.hello();
-    } catch (error) {
-      setBusy(false);
-      showToast(error instanceof Error ? error.message : "Lokální služba není dostupná.");
-      return;
-    }
-    setBusy(false);
-
-    const returnUrl = `${window.location.origin}/pair/complete`;
-    window.location.href = `${daemonOrigin}/pair?returnUrl=${encodeURIComponent(returnUrl)}`;
-  }
-
-  function disconnectDaemon() {
-    window.localStorage.removeItem(tokenStorageKey);
-    setToken("");
-    setSavedToken("");
-    setStates({});
-    setLocalAssets([]);
-    setIsConnected(false);
-    setDaemonSummary("Zařízení je odpojené. Pro lokální stav ho znovu spárujte.");
-  }
 
   async function requestInstall(asset: CatalogAsset) {
     // Daemon vrací knownProjects ze sekce projects v ~/.claude.json.
@@ -527,102 +461,12 @@ export function CatalogExperience({
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <div className="brand-mark">CH</div>
-          <div>
-            <strong>Claude Hub</strong>
-            <span>Katalog pro tým</span>
-          </div>
-        </div>
-        <form action={logoutAction} className="account-block">
-          <span>{userEmail}</span>
-          <button className="secondary dark" type="submit">
-            Odhlásit
-          </button>
-        </form>
-
-
-        <nav className="nav-list" aria-label="Hlavní navigace">
-          {navItems.map((item) => (
-            <button
-              className={activeView === item.id ? "active" : ""}
-              key={item.id}
-              onClick={() => setActiveView(item.id)}
-              type="button"
-            >
-              <span>{item.label}</span>
-              <ChevronRight size={16} />
-            </button>
-          ))}
-        </nav>
-
-        <section className="daemon-card" aria-label="Připojení lokální služby">
-          <div className="daemon-title">
-            <MonitorCheck size={17} />
-            <strong>Lokální služba</strong>
-          </div>
-          <p>{daemonSummary}</p>
-          <div className="daemon-actions">
-            <button className="primary" disabled={busy} onClick={pairAutomatically} type="button">
-              <PlugZap size={16} />
-              Spárovat
-            </button>
-            <button className="secondary dark" disabled={busy} onClick={() => refresh()} type="button">
-              <RefreshCw size={16} />
-              Obnovit stav
-            </button>
-            <button className="secondary dark" disabled={busy || !normalizedToken} onClick={disconnectDaemon} type="button">
-              Odpojit
-            </button>
-          </div>
-          <details
-            className="paired-devices"
-            open={devicesOpen}
-            onToggle={(event) => setDevicesOpen(event.currentTarget.open)}
-          >
-            <summary>Spárovaná zařízení ({pairedDevices.length})</summary>
-            {pairedDevices.length === 0 ? (
-              <p className="muted">Zatím nejsou evidovaná žádná zařízení.</p>
-            ) : (
-              <ul className="device-list">
-                {pairedDevices.map((device) => (
-                  <li key={device.tokenHash}>
-                    <div>
-                      <strong>{device.label}</strong>
-                      <span>{device.claudeHome}</span>
-                      <span className="muted">Naposledy viděno {formatRelativeTime(device.lastSeenAt)}</span>
-                    </div>
-                    <button
-                      className="secondary dark"
-                      onClick={() => handleRevokeDevice(device.tokenHash)}
-                      type="button"
-                    >
-                      Zrušit
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </details>
-          <details className="manual-pairing" open={manualPairingOpen} onToggle={(event) => setManualPairingOpen(event.currentTarget.open)}>
-            <summary>Zadat token ručně</summary>
-            <label htmlFor="pairing-token">Párovací token</label>
-            <input
-              autoComplete="off"
-              id="pairing-token"
-              onChange={(event) => setToken(event.target.value)}
-              placeholder="Vložte párovací token"
-              spellCheck={false}
-              type="password"
-              value={token}
-            />
-            <button className="secondary dark" disabled={busy} onClick={saveToken} type="button">
-              Připojit
-            </button>
-          </details>
-        </section>
-      </aside>
+      <AppSidebar
+        userEmail={userEmail}
+        teamName={teamName}
+        navItems={navItems}
+        mode={{ type: "internal", activeView, onChangeView: setActiveView }}
+      />
 
       <main className="main">
         <header className="topbar">
@@ -793,29 +637,44 @@ export function CatalogExperience({
         ) : null}
 
         {activeView === "team" ? (
-          <TeamPanel
-            isAdmin={isAdmin}
-            members={members}
-            onRefresh={refreshTeamData}
-            onRemoveMember={async (memberUserId) => {
-              try {
-                await removeTeamMember(memberUserId);
-                await refreshTeamData();
-                showToast("Člen byl odebrán.");
-              } catch (error) {
-                showToast(error instanceof Error ? error.message : "Odebrání selhalo.");
-              }
-            }}
-            onSetRole={async (memberUserId, role) => {
-              try {
-                await updateMemberRole(memberUserId, role);
-                await refreshTeamData();
-              } catch (error) {
-                showToast(error instanceof Error ? error.message : "Změna role selhala.");
-              }
-            }}
-            currentUserId={userId}
-          />
+          <>
+            <TeamPanel
+              isAdmin={isAdmin}
+              members={members}
+              onRefresh={refreshTeamData}
+              onRemoveMember={async (memberUserId) => {
+                try {
+                  await removeTeamMember(memberUserId);
+                  await refreshTeamData();
+                  showToast("Člen byl odebrán.");
+                } catch (error) {
+                  showToast(error instanceof Error ? error.message : "Odebrání selhalo.");
+                }
+              }}
+              onSetRole={async (memberUserId, role) => {
+                try {
+                  await updateMemberRole(memberUserId, role);
+                  await refreshTeamData();
+                } catch (error) {
+                  showToast(error instanceof Error ? error.message : "Změna role selhala.");
+                }
+              }}
+              currentUserId={userId}
+            />
+            {isOwner && telemetrySettings ? (
+              <section className="analytics-card analytics-card-wide" style={{ marginTop: 18 }}>
+                <header>
+                  <h3>Nastavení sběru telemetrie</h3>
+                  <p>
+                    Telemetrie se zapíná automaticky při spárování. Jako vlastník můžete pro
+                    konkrétní uživatele centrálně zakázat odesílání — daemon do několika minut sám
+                    přestane exportovat.
+                  </p>
+                </header>
+                <OwnerSettings initialUsers={telemetrySettings} />
+              </section>
+            ) : null}
+          </>
         ) : null}
 
         {activeView === "keys" ? (
@@ -1288,12 +1147,6 @@ function normalizeLocalAsset(asset: LocalAsset): LocalAsset {
   };
 }
 
-async function sha256(value: string) {
-  const encoded = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", encoded);
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 function formatRelativeTime(iso: string) {
   const target = new Date(iso).getTime();
   if (!Number.isFinite(target)) {
@@ -1312,12 +1165,6 @@ function formatRelativeTime(iso: string) {
     return formatter.format(Math.round(diffSeconds / 3600), "hour");
   }
   return formatter.format(Math.round(diffSeconds / 86_400), "day");
-}
-
-function deviceLabel(claudeHome: string) {
-  const normalized = claudeHome.replaceAll("\\", "/");
-  const parts = normalized.split("/").filter(Boolean);
-  return parts.slice(-2).join("/") || "Lokální zařízení";
 }
 
 function localEmptyText(connected: boolean, totalCount: number, visibleCount: number) {
