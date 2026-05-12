@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node.js workspaces
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: claude_hub
+          POSTGRES_USER: claude_hub
+          POSTGRES_PASSWORD: claude_hub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U claude_hub -d claude_hub"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: API integration tests
+        env:
+          CLAUDE_HUB_DATABASE_URL: postgres://claude_hub:claude_hub@127.0.0.1:5432/claude_hub
+          CLAUDE_HUB_TEST_DATABASE_URL: postgres://claude_hub:claude_hub@127.0.0.1:5432/claude_hub
+        run: npm --workspace @claude-hub/api test
+
+  daemon:
+    name: Go daemon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: apps/daemon/go.sum
+
+      - name: Vet
+        run: go vet ./apps/daemon/...
+
+      - name: Test
+        run: go test -race ./apps/daemon/...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: apps/daemon
+          args: --config=../../.golangci.yml
+        continue-on-error: true
