@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import type { CatalogAsset } from "@claude-hub/schema";
 import { computeContentHash, type RegistryRepository, type HubUser } from "./repository.js";
+import { TelemetryRepository } from "./telemetry-repository.js";
+import { registerTelemetryRoutes } from "./telemetry-routes.js";
 
 const assetTypes = ["skill", "command", "mcp", "hook", "plugin", "config"] as const;
 const riskLevels = ["low", "medium", "high", "restricted"] as const;
@@ -193,7 +195,11 @@ function roleAtLeast(role: "owner" | "admin" | "member", required: "member" | "a
   return order[role] >= order[required];
 }
 
-export async function registerRoutes(app: FastifyInstance, repository: RegistryRepository) {
+export async function registerRoutes(
+  app: FastifyInstance,
+  repository: RegistryRepository,
+  telemetry: TelemetryRepository = new TelemetryRepository(repository.pool)
+) {
   app.get("/health", async (_request, reply) => {
     try {
       await repository.ping();
@@ -726,6 +732,10 @@ export async function registerRoutes(app: FastifyInstance, repository: RegistryR
       return { ok: true };
     }
   );
+
+  // ────────── Telemetry & analytics ──────────
+
+  await registerTelemetryRoutes(app, { repository, telemetry });
 }
 
 function bearerToken(authorization: string | undefined) {

@@ -98,7 +98,12 @@ interface UserRow {
 }
 
 export class RegistryRepository {
-  private readonly pool: Pool;
+  /**
+   * Pool je `public readonly` proto, aby ho mohly použít satelitní repository
+   * třídy (TelemetryRepository) bez duplikace připojení. Vlastnictví se ale
+   * deleguje sem (close() ho zavře).
+   */
+  public readonly pool: Pool;
   private readonly ownsPool: boolean;
   public readonly teamId: string;
   public readonly teamName: string;
@@ -256,6 +261,91 @@ export class RegistryRepository {
         created_at timestamptz NOT NULL DEFAULT now(),
         last_used_at timestamptz,
         revoked_at timestamptz
+      )
+    `);
+
+    // ────── Telemetry tables ──────
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS telemetry_metrics (
+        id bigserial PRIMARY KEY,
+        occurred_at timestamptz NOT NULL,
+        user_id text NOT NULL REFERENCES hub_users(id) ON DELETE CASCADE,
+        device_token_hash text NOT NULL,
+        metric_name text NOT NULL,
+        value double precision NOT NULL,
+        session_id text,
+        model text,
+        attr_type text,
+        terminal_type text,
+        project_path text,
+        attributes jsonb NOT NULL DEFAULT '{}'::jsonb
+      )
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_metrics_user_time_idx
+        ON telemetry_metrics (user_id, occurred_at DESC)
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_metrics_name_time_idx
+        ON telemetry_metrics (metric_name, occurred_at DESC)
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_metrics_project_idx
+        ON telemetry_metrics (project_path, occurred_at DESC)
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS telemetry_events (
+        id bigserial PRIMARY KEY,
+        occurred_at timestamptz NOT NULL,
+        user_id text NOT NULL REFERENCES hub_users(id) ON DELETE CASCADE,
+        device_token_hash text NOT NULL,
+        event_name text NOT NULL,
+        session_id text,
+        skill_name text,
+        plugin_name text,
+        marketplace_name text,
+        project_path text,
+        attributes jsonb NOT NULL DEFAULT '{}'::jsonb
+      )
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_events_user_time_idx
+        ON telemetry_events (user_id, occurred_at DESC)
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_events_project_idx
+        ON telemetry_events (project_path, occurred_at DESC)
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS telemetry_daily_user_project (
+        day date NOT NULL,
+        user_id text NOT NULL,
+        project_path text NOT NULL DEFAULT '',
+        sessions int NOT NULL DEFAULT 0,
+        tokens_input bigint NOT NULL DEFAULT 0,
+        tokens_output bigint NOT NULL DEFAULT 0,
+        tokens_cache_read bigint NOT NULL DEFAULT 0,
+        tokens_cache_create bigint NOT NULL DEFAULT 0,
+        cost_usd numeric(12,4) NOT NULL DEFAULT 0,
+        active_seconds bigint NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, user_id, project_path)
+      )
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS telemetry_daily_project_idx
+        ON telemetry_daily_user_project (project_path, day DESC)
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS telemetry_settings (
+        user_id text PRIMARY KEY REFERENCES hub_users(id) ON DELETE CASCADE,
+        opted_in boolean NOT NULL DEFAULT true,
+        opted_in_at timestamptz NOT NULL DEFAULT now(),
+        disabled_by_owner boolean NOT NULL DEFAULT false,
+        disabled_at timestamptz
       )
     `);
 
@@ -496,6 +586,32 @@ export class RegistryRepository {
       `DELETE FROM paired_devices WHERE user_id = $1 AND token_hash = $2`,
       [userId, tokenHash]
     );
+  }
+
+  /**
+   * Vyhledá zařízení podle nehasovaného pairing tokenu (Bearer od daemonu).
+   * Token uložený v DB je SHA-256 hash, takže porovnání děláme přes hash.
+   * Zároveň posune `last_seen_at`, aby admin viděl, že zařízení žije.
+   */
+  async resolveDeviceByPairingToken(
+    token: string
+  ): Promise<{ userId: string; tokenHash: string } | null> {
+    const trimmed = token.trim();
+    if (!trimmed) return null;
+    const tokenHash = sha256(trimmed);
+    const result = await this.pool.query<{ user_id: string }>(
+      `
+        UPDATE paired_devices
+        SET last_seen_at = now()
+        WHERE token_hash = $1
+        RETURNING user_id
+      `,
+      [tokenHash]
+    );
+    if (result.rows.length === 0) {
+      return null;
+    }
+    return { userId: result.rows[0].user_id, tokenHash };
   }
 
   async upsertPairedDevice(userId: string, tokenHash: string, label: string, claudeHome: string) {

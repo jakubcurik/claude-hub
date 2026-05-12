@@ -3,6 +3,8 @@ import rateLimit from "@fastify/rate-limit";
 import fastify from "fastify";
 import { RegistryRepository } from "./repository.js";
 import { registerRoutes } from "./routes.js";
+import { TelemetryRepository } from "./telemetry-repository.js";
+import { startTelemetryAggregator } from "./telemetry-aggregator.js";
 
 const host = process.env.CLAUDE_HUB_API_HOST ?? "127.0.0.1";
 const port = Number(process.env.CLAUDE_HUB_API_PORT ?? 8787);
@@ -34,12 +36,16 @@ const cleanupTimer = setInterval(() => {
 }, sessionCleanupIntervalMs);
 cleanupTimer.unref?.();
 
+const telemetry = new TelemetryRepository(repository.pool);
+const stopAggregator = startTelemetryAggregator(telemetry, app.log);
+
 app.addHook("onClose", async () => {
   clearInterval(cleanupTimer);
+  stopAggregator();
   await repository.close();
 });
 
-await registerRoutes(app, repository);
+await registerRoutes(app, repository, telemetry);
 
 try {
   await app.listen({ host, port });
