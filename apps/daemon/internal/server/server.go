@@ -11,15 +11,17 @@ import (
 	"strings"
 
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/claudecode"
+	"github.com/claude-hub/claude-hub/apps/daemon/internal/telemetry"
 )
 
 var localOriginPattern = regexp.MustCompile(`^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$`)
 
 type Server struct {
-	manager *claudecode.Manager
-	token   string
-	logger  *slog.Logger
-	mux     *http.ServeMux
+	manager   *claudecode.Manager
+	token     string
+	logger    *slog.Logger
+	mux       *http.ServeMux
+	forwarder *telemetry.Forwarder
 }
 
 type stateRequest struct {
@@ -41,12 +43,13 @@ type localAssetExportRequest struct {
 	LocalAssetID string `json:"localAssetId"`
 }
 
-func New(manager *claudecode.Manager, token string, logger *slog.Logger) *Server {
+func New(manager *claudecode.Manager, token string, logger *slog.Logger, forwarder *telemetry.Forwarder) *Server {
 	server := &Server{
-		manager: manager,
-		token:   token,
-		logger:  logger,
-		mux:     http.NewServeMux(),
+		manager:   manager,
+		token:     token,
+		logger:    logger,
+		mux:       http.NewServeMux(),
+		forwarder: forwarder,
 	}
 	server.routes()
 	return server
@@ -74,6 +77,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/set-enabled", s.withAuth(s.handleSetEnabled))
 	s.mux.HandleFunc("GET /v1/local-assets", s.withAuth(s.handleLocalAssets))
 	s.mux.HandleFunc("POST /v1/local-assets/export", s.withAuth(s.handleLocalAssetExport))
+	s.mux.HandleFunc("POST /v1/telemetry/enable", s.withAuth(s.handleTelemetryEnable))
+	s.mux.HandleFunc("POST /v1/telemetry/disable", s.withAuth(s.handleTelemetryDisable))
+	s.mux.HandleFunc("GET /v1/telemetry/status", s.withAuth(s.handleTelemetryStatus))
 }
 
 func (s *Server) handlePairPage(response http.ResponseWriter, request *http.Request) {
@@ -116,6 +122,7 @@ func (s *Server) handleHello(response http.ResponseWriter, request *http.Request
 			"mcp-merge",
 			"hook-merge",
 			"plugin-install",
+			"telemetry-export",
 		},
 	})
 }
@@ -205,6 +212,67 @@ func (s *Server) handleLocalAssets(response http.ResponseWriter, request *http.R
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"assets": assets})
+}
+
+type telemetryEnableRequest struct {
+	APIEndpoint string `json:"apiEndpoint"`
+}
+
+func (s *Server) handleTelemetryEnable(response http.ResponseWriter, request *http.Request) {
+	var body telemetryEnableRequest
+	if !decodeBody(response, request, &body) {
+		return
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(body.APIEndpoint), "/")
+	if endpoint == "" {
+		writeJSON(response, http.StatusBadRequest, map[string]string{
+			"error":   errorTitle(http.StatusBadRequest),
+			"code":    "missing_api_endpoint",
+			"message": "Chybí apiEndpoint pro forwarder telemetrie.",
+		})
+		return
+	}
+	if err := s.manager.EnableTelemetry(endpoint); err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	if s.forwarder != nil {
+		s.forwarder.SetAPIEndpoint(endpoint)
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"ok":          true,
+		"apiEndpoint": endpoint,
+	})
+}
+
+func (s *Server) handleTelemetryDisable(response http.ResponseWriter, _ *http.Request) {
+	if err := s.manager.DisableTelemetry(); err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	if s.forwarder != nil {
+		s.forwarder.SetAPIEndpoint("")
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleTelemetryStatus(response http.ResponseWriter, _ *http.Request) {
+	payload := map[string]any{
+		"enabled":     s.manager.TelemetryEnabled(),
+		"apiEndpoint": s.manager.TelemetryAPIEndpoint(),
+		"queueDepth":  int64(0),
+	}
+	if s.forwarder != nil {
+		lastFlush, lastError := s.forwarder.LastFlush()
+		payload["queueDepth"] = s.forwarder.QueueDepth()
+		if !lastFlush.IsZero() {
+			payload["lastFlushAt"] = lastFlush.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		if lastError != "" {
+			payload["lastError"] = lastError
+		}
+	}
+	writeJSON(response, http.StatusOK, payload)
 }
 
 func (s *Server) handleLocalAssetExport(response http.ResponseWriter, request *http.Request) {

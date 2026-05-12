@@ -49,6 +49,10 @@ services:
       - "0.0.0.0"
       - "-port"
       - "17373"
+      - "-otlp-host"
+      - "0.0.0.0"
+      - "-otlp-port"
+      - "4318"
       - "-claude-home"
       - "/data/claude"
     healthcheck:
@@ -58,6 +62,7 @@ services:
       retries: 6
     ports:
       - "17373:17373"
+      - "4318:4318"
     volumes:
       # Na Windows použijte ${USERPROFILE}, na Linux/macOS ${HOME}.
       # Docker Compose dosadí prázdný řetězec, pokud proměnná neexistuje, proto fallback.

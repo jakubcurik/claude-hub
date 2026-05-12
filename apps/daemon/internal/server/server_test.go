@@ -21,7 +21,7 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	}
 	token := "test-token-abc-123"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(New(manager, token, logger).Handler())
+	srv := httptest.NewServer(New(manager, token, logger, nil).Handler())
 	t.Cleanup(srv.Close)
 	return srv, token
 }
