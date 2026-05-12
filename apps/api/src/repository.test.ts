@@ -19,7 +19,7 @@ if (!databaseUrl) {
       await repository.init();
 
       const firstAsset = makeAsset("0.1.0", "První verze");
-      await repository.publishAsset(teamId, firstAsset);
+      await repository.publishAsset(teamId, firstAsset, "user_test");
 
       const firstCatalog = await repository.getCatalog(teamId);
       assert.equal(firstCatalog.length, 1);
@@ -31,14 +31,24 @@ if (!databaseUrl) {
       assert.equal(reloadedCatalog[0]?.slug, "sample-skill");
 
       const updatedAsset = makeAsset("0.2.0", "Aktualizovaná verze");
-      await repository.publishAsset(teamId, updatedAsset);
+      await repository.publishAsset(teamId, updatedAsset, "user_test");
 
       const updatedCatalog = await repository.getCatalog(teamId);
       assert.equal(updatedCatalog.length, 1);
       assert.equal(updatedCatalog[0]?.version, "0.2.0");
       assert.equal(updatedCatalog[0]?.summary, "Aktualizovaná verze");
+
+      const versions = await repository.getAssetVersions(teamId, "skill", "sample-skill");
+      assert.equal(versions.length, 2);
+      assert.equal(versions[0]?.version, "0.2.0");
+      assert.equal(versions[1]?.version, "0.1.0");
+
+      const events = await repository.listEvents(teamId, 10);
+      assert.ok(events.some((event) => event.event === "publish" && event.assetVersion === "0.2.0"));
     } finally {
       await pool.query("DELETE FROM catalog_assets WHERE team_id = $1", [teamId]).catch(() => undefined);
+      await pool.query("DELETE FROM catalog_asset_versions WHERE team_id = $1", [teamId]).catch(() => undefined);
+      await pool.query("DELETE FROM catalog_events WHERE team_id = $1", [teamId]).catch(() => undefined);
       await pool.end();
     }
   });
