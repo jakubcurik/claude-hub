@@ -26,6 +26,8 @@ services:
       CLAUDE_HUB_DATABASE_URL: postgres://claude_hub:claude_hub@postgres:5432/claude_hub
       CLAUDE_HUB_API_HOST: 0.0.0.0
       CLAUDE_HUB_API_PORT: 8787
+      CLAUDE_HUB_TEAM_ID: ${CLAUDE_HUB_TEAM_ID:-main}
+      CLAUDE_HUB_TEAM_NAME: ${CLAUDE_HUB_TEAM_NAME:-Tým}
       NODE_ENV: production
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -57,8 +59,10 @@ services:
     ports:
       - "17373:17373"
     volumes:
-      - ${USERPROFILE}/.claude:/data/claude
-      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-D:/Claude}:/workspace-roots/d-claude:ro
+      # Na Windows použijte ${USERPROFILE}, na Linux/macOS ${HOME}.
+      # Docker Compose dosadí prázdný řetězec, pokud proměnná neexistuje, proto fallback.
+      - ${CLAUDE_HUB_CLAUDE_HOME:-${USERPROFILE:-${HOME}}/.claude}:/data/claude
+      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude:ro
 
   web:
     build:
@@ -74,6 +78,8 @@ services:
       CLAUDE_HUB_DAEMON_BREW_PACKAGE: ${CLAUDE_HUB_DAEMON_BREW_PACKAGE:-animato-lab/tap/claude-hub-daemon}
       CLAUDE_HUB_DAEMON_WINGET_ID: ${CLAUDE_HUB_DAEMON_WINGET_ID:-Animato.ClaudeHubDaemon}
       CLAUDE_HUB_PUBLIC_URL: ${CLAUDE_HUB_PUBLIC_URL:-https://hub.animato-lab.cz}
+      CLAUDE_HUB_TEAM_ID: ${CLAUDE_HUB_TEAM_ID:-main}
+      CLAUDE_HUB_TEAM_NAME: ${CLAUDE_HUB_TEAM_NAME:-Tým}
       NODE_ENV: production
     ports:
       - "3100:3000"
