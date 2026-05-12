@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -36,6 +37,26 @@ var skippedWorkspaceDirs = map[string]bool{
 type Manager struct {
 	ClaudeHome string
 	HubHome    string
+
+	locksMu sync.Mutex
+	locks   map[string]*sync.Mutex
+}
+
+// assetLock vrátí mutex unikátní pro daný (type, slug) pár.
+// Tím serializujeme paralelní install/uninstall/set-enabled na stejné položce.
+func (m *Manager) assetLock(assetType AssetType, slug string) *sync.Mutex {
+	key := string(assetType) + ":" + Slugify(slug)
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if m.locks == nil {
+		m.locks = make(map[string]*sync.Mutex)
+	}
+	if lock, ok := m.locks[key]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.locks[key] = lock
+	return lock
 }
 
 type assetPaths struct {
@@ -65,6 +86,7 @@ func NewManager(claudeHome string) *Manager {
 	return &Manager{
 		ClaudeHome: claudeHome,
 		HubHome:    HubHome(claudeHome),
+		locks:      make(map[string]*sync.Mutex),
 	}
 }
 
@@ -137,6 +159,15 @@ func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
 		return InstallPreview{}, err
 	}
 
+	switch asset.Type {
+	case AssetTypeMCP:
+		return m.previewMCPInstall(asset)
+	case AssetTypeHook:
+		return m.previewHookInstall(asset)
+	case AssetTypePlugin:
+		return m.previewPluginInstall(asset)
+	}
+
 	paths := m.paths(asset)
 	operations := make([]InstallOperation, 0, 3)
 	if exists(paths.TargetFile) || exists(paths.DisabledFile) {
@@ -175,6 +206,150 @@ func (m *Manager) PreviewInstall(asset CatalogAsset) (InstallPreview, error) {
 	}, nil
 }
 
+func (m *Manager) previewMCPInstall(asset CatalogAsset) (InstallPreview, error) {
+	paths := m.paths(asset)
+	servers, err := extractMCPServersFromAsset(asset)
+	if err != nil {
+		return InstallPreview{}, err
+	}
+	doc, err := readMCPDoc(paths.TargetFile)
+	if err != nil {
+		return InstallPreview{}, err
+	}
+
+	operations := make([]InstallOperation, 0, 4)
+	operations = append(operations, InstallOperation{
+		Type:        "backup",
+		Path:        paths.TargetFile,
+		Description: "Zazálohovat .mcp.json před úpravou.",
+		Risk:        RiskLow,
+	})
+	for _, serverKey := range sortedStringKeys(servers) {
+		if _, exists := doc.MCPServers[serverKey]; exists {
+			operations = append(operations, InstallOperation{
+				Type:        "replace",
+				Path:        paths.TargetFile + " :: mcpServers." + serverKey,
+				Description: fmt.Sprintf("Nahradit existující MCP server %q definicí z katalogu.", serverKey),
+				Risk:        asset.Risk,
+			})
+			continue
+		}
+		operations = append(operations, InstallOperation{
+			Type:        "create",
+			Path:        paths.TargetFile + " :: mcpServers." + serverKey,
+			Description: fmt.Sprintf("Přidat MCP server %q.", serverKey),
+			Risk:        asset.Risk,
+		})
+	}
+	operations = append(operations, InstallOperation{
+		Type:        "manifest",
+		Path:        paths.Manifest,
+		Description: "Uložit seznam přidaných MCP klíčů pro pozdější uninstall.",
+		Risk:        RiskLow,
+	})
+
+	return InstallPreview{
+		AssetID:     asset.ID,
+		Version:     asset.Version,
+		Operations:  operations,
+		Warnings:    contentWarnings(asset.Files),
+		RequiredEnv: asset.RequiredEnv,
+	}, nil
+}
+
+func (m *Manager) previewHookInstall(asset CatalogAsset) (InstallPreview, error) {
+	paths := m.paths(asset)
+	hookEntries, err := extractHookEntriesFromAsset(asset)
+	if err != nil {
+		return InstallPreview{}, err
+	}
+	operations := make([]InstallOperation, 0, 4)
+	operations = append(operations, InstallOperation{
+		Type:        "backup",
+		Path:        paths.TargetFile,
+		Description: "Zazálohovat settings.json před úpravou.",
+		Risk:        RiskLow,
+	})
+	for _, event := range sortedHookEventKeys(hookEntries) {
+		operations = append(operations, InstallOperation{
+			Type:        "create",
+			Path:        paths.TargetFile + " :: hooks." + event,
+			Description: fmt.Sprintf("Přidat %d hook položek do události %s.", len(hookEntries[event]), event),
+			Risk:        asset.Risk,
+		})
+	}
+	operations = append(operations, InstallOperation{
+		Type:        "manifest",
+		Path:        paths.Manifest,
+		Description: "Uložit identifikátory přidaných hook položek.",
+		Risk:        RiskLow,
+	})
+
+	return InstallPreview{
+		AssetID:     asset.ID,
+		Version:     asset.Version,
+		Operations:  operations,
+		Warnings:    contentWarnings(asset.Files),
+		RequiredEnv: asset.RequiredEnv,
+	}, nil
+}
+
+func (m *Manager) previewPluginInstall(asset CatalogAsset) (InstallPreview, error) {
+	paths := m.paths(asset)
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+	operations := []InstallOperation{
+		{
+			Type:        "backup",
+			Path:        paths.TargetRoot,
+			Description: "Zazálohovat plugin složku (pokud existuje).",
+			Risk:        RiskLow,
+		},
+		{
+			Type:        "create",
+			Path:        paths.TargetRoot,
+			Description: "Zapsat soubory pluginu do ~/.claude/plugins/<slug>/.",
+			Risk:        asset.Risk,
+		},
+		{
+			Type:        "create",
+			Path:        pluginManifestPath,
+			Description: "Aktualizovat installed_plugins.json o nový plugin.",
+			Risk:        asset.Risk,
+		},
+		{
+			Type:        "manifest",
+			Path:        paths.Manifest,
+			Description: "Uložit metadata pluginu pro pozdější uninstall.",
+			Risk:        RiskLow,
+		},
+	}
+	return InstallPreview{
+		AssetID:     asset.ID,
+		Version:     asset.Version,
+		Operations:  operations,
+		Warnings:    contentWarnings(asset.Files),
+		RequiredEnv: asset.RequiredEnv,
+	}, nil
+}
+
+func sortedStringKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedHookEventKeys(m map[string][]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return LocalAssetState{}, err
@@ -185,6 +360,19 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 		return LocalAssetState{}, err
 	}
 
+	lock := m.assetLock(asset.Type, asset.Slug)
+	lock.Lock()
+	defer lock.Unlock()
+
+	switch asset.Type {
+	case AssetTypeMCP:
+		return m.installMCP(asset)
+	case AssetTypeHook:
+		return m.installHook(asset)
+	case AssetTypePlugin:
+		return m.installPlugin(asset)
+	}
+
 	paths := m.paths(asset)
 	backupPath, err := m.backup(paths, asset)
 	if err != nil {
@@ -193,6 +381,10 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 
 	if exists(paths.DisabledRoot) {
 		_ = os.RemoveAll(paths.DisabledRoot)
+	}
+
+	if asset.Type == AssetTypeSkill && exists(paths.TargetRoot) {
+		_ = os.RemoveAll(paths.TargetRoot)
 	}
 
 	if err := writeAssetFiles(paths.TargetRoot, asset); err != nil {
@@ -222,6 +414,361 @@ func (m *Manager) Install(asset CatalogAsset) (LocalAssetState, error) {
 	return m.assetState(asset, localIndex)
 }
 
+func (m *Manager) installMCP(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	servers, err := extractMCPServersFromAsset(asset)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	doc, err := readMCPDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// Záloha původního stavu — pro disable / uninstall potřebujeme původní hodnoty
+	// klíčů, abychom mohli korektně vrátit stav.
+	previous := make(map[string]json.RawMessage, len(servers))
+	for key := range servers {
+		if existing, ok := doc.MCPServers[key]; ok {
+			previous[key] = existing
+		}
+	}
+	backupPath, err := m.backupMergeArtifact(paths, asset, doc)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	addedKeys := make([]string, 0, len(servers))
+	for key, value := range servers {
+		doc.MCPServers[key] = value
+		addedKeys = append(addedKeys, key)
+	}
+	sort.Strings(addedKeys)
+	if err := writeMCPDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	record := manifest{
+		AssetID:            asset.ID,
+		Type:               asset.Type,
+		Slug:               asset.Slug,
+		Name:               asset.Name,
+		Version:            asset.Version,
+		Enabled:            true,
+		InstalledAt:        now,
+		Fingerprint:        fingerprint(asset),
+		ContentFingerprint: shaText(readText(paths.TargetFile)),
+		BackupPath:         backupPath,
+		MCPServerKeys:      addedKeys,
+		ContentSnapshots:   serializeRawMap(previous),
+	}
+	if err := writeJSON(paths.Manifest, record); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) installHook(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	hookEntries, err := extractHookEntriesFromAsset(asset)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	doc, err := readHookDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	backupPath, err := m.backupMergeArtifact(paths, asset, doc)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// Pro každý event si zapamatujeme indexy položek, které přidáváme — aby
+	// disable/uninstall mohlo cíleně vrátit zpět jen tyto položky.
+	indexMap := map[string][]int{}
+	for event, entries := range hookEntries {
+		existing := doc.Hooks[event]
+		addedIndices := make([]int, 0, len(entries))
+		for _, entry := range entries {
+			addedIndices = append(addedIndices, len(existing))
+			existing = append(existing, entry)
+		}
+		doc.Hooks[event] = existing
+		indexMap[event] = addedIndices
+	}
+	if err := writeHookDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	record := manifest{
+		AssetID:            asset.ID,
+		Type:               asset.Type,
+		Slug:               asset.Slug,
+		Name:               asset.Name,
+		Version:            asset.Version,
+		Enabled:            true,
+		InstalledAt:        now,
+		Fingerprint:        fingerprint(asset),
+		ContentFingerprint: shaText(readText(paths.TargetFile)),
+		BackupPath:         backupPath,
+		HookEventEntries:   indexMap,
+	}
+	if err := writeJSON(paths.Manifest, record); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) installPlugin(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+
+	backupPath, err := m.backup(paths, asset)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+
+	if exists(paths.TargetRoot) {
+		_ = os.RemoveAll(paths.TargetRoot)
+	}
+	if err := writeAssetFiles(paths.TargetRoot, asset); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// Aktualizace installed_plugins.json
+	doc, err := readPluginDoc(pluginManifestPath)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	pluginKey := asset.Slug
+	doc.Plugins[pluginKey] = []installedPluginEntry{
+		{
+			Scope:       "user",
+			ProjectPath: "",
+			InstallPath: paths.TargetRoot,
+			Version:     asset.Version,
+		},
+	}
+	if err := writePluginDoc(pluginManifestPath, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	record := manifest{
+		AssetID:            asset.ID,
+		Type:               asset.Type,
+		Slug:               asset.Slug,
+		Name:               asset.Name,
+		Version:            asset.Version,
+		Enabled:            true,
+		InstalledAt:        now,
+		Fingerprint:        fingerprint(asset),
+		ContentFingerprint: shaText(readText(paths.TargetFile)),
+		BackupPath:         backupPath,
+		PluginEntries:      []string{"user:" + pluginKey},
+	}
+	if err := writeJSON(paths.Manifest, record); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+// toggleMergeAsset pro MCP / hook přesune položky mezi aktivním dokumentem a "disabled stash"
+// uloženou v `.claude-hub/disabled/<type>/<slug>.json`.
+func (m *Manager) toggleMergeAsset(asset CatalogAsset, enabled bool) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	record, _ := readManifest(paths.Manifest)
+	if record == nil {
+		return LocalAssetState{}, errors.New("položku nelze přepnout — chybí Hub manifest")
+	}
+
+	switch asset.Type {
+	case AssetTypeMCP:
+		if err := m.toggleMCP(asset, paths, record, enabled); err != nil {
+			return LocalAssetState{}, err
+		}
+	case AssetTypeHook:
+		if err := m.toggleHook(asset, paths, record, enabled); err != nil {
+			return LocalAssetState{}, err
+		}
+	}
+
+	record.Enabled = enabled
+	record.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	record.ContentFingerprint = shaText(readText(paths.TargetFile))
+	if err := writeJSON(paths.Manifest, record); err != nil {
+		return LocalAssetState{}, err
+	}
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) toggleMCP(asset CatalogAsset, paths assetPaths, record *manifest, enabled bool) error {
+	doc, err := readMCPDoc(paths.TargetFile)
+	if err != nil {
+		return err
+	}
+	stashPath := paths.DisabledFile
+
+	if enabled {
+		stash := map[string]json.RawMessage{}
+		if exists(stashPath) {
+			bytes, err := os.ReadFile(stashPath)
+			if err == nil {
+				_ = json.Unmarshal(bytes, &stash)
+			}
+		}
+		for _, key := range record.MCPServerKeys {
+			if value, ok := stash[key]; ok {
+				doc.MCPServers[key] = value
+				delete(stash, key)
+			}
+		}
+		if err := writeMCPDoc(paths.TargetFile, doc); err != nil {
+			return err
+		}
+		if len(stash) == 0 {
+			_ = os.Remove(stashPath)
+		} else {
+			bytes, _ := json.MarshalIndent(stash, "", "  ")
+			_ = os.MkdirAll(filepath.Dir(stashPath), 0o755)
+			_ = os.WriteFile(stashPath, bytes, 0o644)
+		}
+		return nil
+	}
+
+	stash := map[string]json.RawMessage{}
+	if exists(stashPath) {
+		bytes, err := os.ReadFile(stashPath)
+		if err == nil {
+			_ = json.Unmarshal(bytes, &stash)
+		}
+	}
+	for _, key := range record.MCPServerKeys {
+		if value, ok := doc.MCPServers[key]; ok {
+			stash[key] = value
+			delete(doc.MCPServers, key)
+		}
+	}
+	if err := writeMCPDoc(paths.TargetFile, doc); err != nil {
+		return err
+	}
+	bytes, _ := json.MarshalIndent(stash, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(stashPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(stashPath, bytes, 0o644)
+}
+
+func (m *Manager) toggleHook(asset CatalogAsset, paths assetPaths, record *manifest, enabled bool) error {
+	doc, err := readHookDoc(paths.TargetFile)
+	if err != nil {
+		return err
+	}
+	stashPath := paths.DisabledFile
+
+	if enabled {
+		stash := map[string][]json.RawMessage{}
+		if exists(stashPath) {
+			bytes, err := os.ReadFile(stashPath)
+			if err == nil {
+				_ = json.Unmarshal(bytes, &stash)
+			}
+		}
+		newIndices := map[string][]int{}
+		for event, entries := range stash {
+			existing := doc.Hooks[event]
+			indices := make([]int, 0, len(entries))
+			for _, entry := range entries {
+				indices = append(indices, len(existing))
+				existing = append(existing, entry)
+			}
+			doc.Hooks[event] = existing
+			newIndices[event] = indices
+		}
+		record.HookEventEntries = newIndices
+		if err := writeHookDoc(paths.TargetFile, doc); err != nil {
+			return err
+		}
+		_ = os.Remove(stashPath)
+		return nil
+	}
+
+	stash := map[string][]json.RawMessage{}
+	for event, indices := range record.HookEventEntries {
+		entries := doc.Hooks[event]
+		stashed := make([]json.RawMessage, 0, len(indices))
+		sort.Sort(sort.Reverse(sort.IntSlice(indices)))
+		for _, idx := range indices {
+			if idx >= 0 && idx < len(entries) {
+				stashed = append([]json.RawMessage{entries[idx]}, stashed...)
+				entries = append(entries[:idx], entries[idx+1:]...)
+			}
+		}
+		if len(entries) == 0 {
+			delete(doc.Hooks, event)
+		} else {
+			doc.Hooks[event] = entries
+		}
+		if len(stashed) > 0 {
+			stash[event] = stashed
+		}
+	}
+	if err := writeHookDoc(paths.TargetFile, doc); err != nil {
+		return err
+	}
+	bytes, _ := json.MarshalIndent(stash, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(stashPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(stashPath, bytes, 0o644)
+}
+
+// backupMergeArtifact uloží snapshot celého merge dokumentu (mcp/settings) před úpravou.
+// Slouží pro plnou rollback cestu i pro audit, jak vypadal dokument před zápisem.
+func (m *Manager) backupMergeArtifact(paths assetPaths, asset CatalogAsset, doc any) (string, error) {
+	if !exists(paths.TargetFile) {
+		return "", nil
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	dir := filepath.Join(m.HubHome, "backups", stamp+"-"+string(asset.Type)+"-"+asset.Slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	bytes, err := os.ReadFile(paths.TargetFile)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.Base(paths.TargetFile)), bytes, 0o644); err != nil {
+		return "", err
+	}
+	if doc != nil {
+		marshalled, _ := json.MarshalIndent(doc, "", "  ")
+		_ = os.WriteFile(filepath.Join(dir, "parsed.json"), marshalled, 0o644)
+	}
+	return dir, nil
+}
+
+func serializeRawMap(m map[string]json.RawMessage) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(m))
+	for key, value := range m {
+		result[key] = string(value)
+	}
+	return result
+}
+
 func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
 		return LocalAssetState{}, err
@@ -230,6 +777,14 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState,
 	asset = normalizeAsset(asset)
 	if err := validateSupported(asset); err != nil {
 		return LocalAssetState{}, err
+	}
+
+	lock := m.assetLock(asset.Type, asset.Slug)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook {
+		return m.toggleMergeAsset(asset, enabled)
 	}
 
 	paths := m.paths(asset)
@@ -262,9 +817,152 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool) (LocalAssetState,
 	record.Enabled = enabled
 	record.UpdatedAt = now
 
+	// Po přesunu mezi enabled/disabled obnovíme content fingerprint.
+	// Bez tohoto kroku by toggle nebo úprava na vypnuté kopii falešně hlásily "local_changes".
+	if enabled {
+		record.ContentFingerprint = shaText(readText(paths.TargetFile))
+	} else {
+		record.ContentFingerprint = shaText(readText(paths.DisabledFile))
+	}
+
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
 	}
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+// Uninstall odstraní lokální položku a smaže manifest. Pro merge-style typy
+// (MCP, hook) vrátí pouze přidané položky a zachová zbytek dokumentu.
+func (m *Manager) Uninstall(asset CatalogAsset) (LocalAssetState, error) {
+	if err := m.EnsureBaseDirs(); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	asset = normalizeAsset(asset)
+	if err := validateSupported(asset); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	lock := m.assetLock(asset.Type, asset.Slug)
+	lock.Lock()
+	defer lock.Unlock()
+
+	switch asset.Type {
+	case AssetTypeMCP:
+		return m.uninstallMCP(asset)
+	case AssetTypeHook:
+		return m.uninstallHook(asset)
+	case AssetTypePlugin:
+		return m.uninstallPlugin(asset)
+	}
+
+	paths := m.paths(asset)
+	if !exists(paths.TargetFile) && !exists(paths.DisabledFile) && !exists(paths.Manifest) {
+		return LocalAssetState{}, errors.New("položka není nainstalovaná")
+	}
+
+	if _, err := m.backup(paths, asset); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	_ = os.RemoveAll(paths.TargetRoot)
+	_ = os.RemoveAll(paths.DisabledRoot)
+	_ = os.Remove(paths.Manifest)
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) uninstallMCP(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	record, _ := readManifest(paths.Manifest)
+	if record == nil {
+		return LocalAssetState{}, errors.New("položka MCP není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
+	}
+	doc, err := readMCPDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	if _, err := m.backupMergeArtifact(paths, asset, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// Vrátíme klíče, které jsme přidali. Pokud existoval předchozí obsah, obnovíme ho;
+	// jinak klíč smažeme.
+	previous := record.ContentSnapshots
+	for _, key := range record.MCPServerKeys {
+		if raw, ok := previous[key]; ok {
+			doc.MCPServers[key] = json.RawMessage(raw)
+		} else {
+			delete(doc.MCPServers, key)
+		}
+	}
+	if err := writeMCPDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+	_ = os.Remove(paths.Manifest)
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) uninstallHook(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	record, _ := readManifest(paths.Manifest)
+	if record == nil {
+		return LocalAssetState{}, errors.New("hook položka není evidovaná v Claude Hubu, neumíme bezpečně odstranit")
+	}
+	doc, err := readHookDoc(paths.TargetFile)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	if _, err := m.backupMergeArtifact(paths, asset, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// Pro každý event odstraníme indexy, které jsme přidali. Začínáme od konce,
+	// aby předchozí indexy zůstaly platné.
+	for event, indices := range record.HookEventEntries {
+		entries := doc.Hooks[event]
+		sort.Sort(sort.Reverse(sort.IntSlice(indices)))
+		for _, idx := range indices {
+			if idx >= 0 && idx < len(entries) {
+				entries = append(entries[:idx], entries[idx+1:]...)
+			}
+		}
+		if len(entries) == 0 {
+			delete(doc.Hooks, event)
+		} else {
+			doc.Hooks[event] = entries
+		}
+	}
+	if err := writeHookDoc(paths.TargetFile, doc); err != nil {
+		return LocalAssetState{}, err
+	}
+	_ = os.Remove(paths.Manifest)
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+func (m *Manager) uninstallPlugin(asset CatalogAsset) (LocalAssetState, error) {
+	paths := m.paths(asset)
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+
+	if _, err := m.backup(paths, asset); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	_ = os.RemoveAll(paths.TargetRoot)
+
+	doc, err := readPluginDoc(pluginManifestPath)
+	if err == nil {
+		delete(doc.Plugins, asset.Slug)
+		_ = writePluginDoc(pluginManifestPath, doc)
+	}
+	_ = os.Remove(paths.Manifest)
 
 	localIndex, _ := m.localInstalledIndex()
 	return m.assetState(asset, localIndex)
@@ -317,7 +1015,7 @@ func (m *Manager) ExportLocalAsset(localAssetID string) (LocalAssetExport, error
 		if err != nil {
 			return LocalAssetExport{}, err
 		}
-		warnings := mergeWarnings(asset.Warnings, contentWarnings(files))
+		warnings := mergeWarnings(asset.Warnings, contentWarnings(files), m.consumeExportSkipWarning(asset.LocalAssetID))
 
 		export := LocalAssetExport{
 			LocalAssetID: asset.LocalAssetID,
@@ -751,6 +1449,7 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	}
 
 	files := make([]AssetFile, 0)
+	skipped := make([]string, 0)
 	err = filepath.WalkDir(source, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -761,15 +1460,17 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		if shouldSkipExportFile(entry.Name()) {
-			return nil
-		}
 		relative, err := filepath.Rel(source, current)
 		if err != nil {
 			return err
 		}
+		if shouldSkipExportFile(entry.Name()) {
+			skipped = append(skipped, filepath.ToSlash(relative))
+			return nil
+		}
 		content, err := readSmallTextFile(current)
 		if err != nil {
+			skipped = append(skipped, filepath.ToSlash(relative))
 			return nil
 		}
 		files = append(files, AssetFile{
@@ -788,7 +1489,37 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Path < files[j].Path
 	})
+
+	if len(skipped) > 0 {
+		m.recordExportSkipWarning(asset, skipped)
+	}
+
 	return files, nil
+}
+
+// recordExportSkipWarning si poznamená přeskočené soubory do paměti per export volání.
+// Konkrétní warning text se přidá v ExportLocalAsset z těchto stop.
+var exportSkipMemory sync.Map
+
+func (m *Manager) recordExportSkipWarning(asset LocalAsset, skipped []string) {
+	exportSkipMemory.Store(asset.LocalAssetID, skipped)
+}
+
+func (m *Manager) consumeExportSkipWarning(localAssetID string) []string {
+	value, ok := exportSkipMemory.LoadAndDelete(localAssetID)
+	if !ok {
+		return nil
+	}
+	skipped, ok := value.([]string)
+	if !ok || len(skipped) == 0 {
+		return nil
+	}
+	count := len(skipped)
+	preview := strings.Join(skipped, ", ")
+	if count > 5 {
+		preview = strings.Join(skipped[:5], ", ") + ", …"
+	}
+	return []string{fmt.Sprintf("Přeskočeno %d souborů (binární nebo příliš velké pro sdílení): %s.", count, preview)}
 }
 
 func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsset) (LocalAssetState, error) {
@@ -810,8 +1541,19 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 	record, _ := readManifest(paths.Manifest)
 	targetExists := exists(paths.TargetFile)
 	disabledExists := exists(paths.DisabledFile)
-	installed := targetExists || disabledExists
-	enabled := targetExists
+
+	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook
+	installed := false
+	enabled := false
+	if mergeType {
+		installed = record != nil
+		if record != nil {
+			enabled = record.Enabled
+		}
+	} else {
+		installed = targetExists || disabledExists
+		enabled = targetExists
+	}
 	matchedLocalAsset, hasLocalMatch := localIndex[assetIdentityKey(asset.Type, asset.Slug)]
 	if !installed && hasLocalMatch {
 		installed = true
@@ -900,12 +1642,49 @@ func stateWarnings(asset CatalogAsset, localAsset LocalAsset, localMatchWithoutM
 
 func (m *Manager) paths(asset CatalogAsset) assetPaths {
 	manifestPath := filepath.Join(m.HubHome, "installed", string(asset.Type)+"-"+asset.Slug+".json")
-	if asset.Type == AssetTypeSkill {
+	switch asset.Type {
+	case AssetTypeSkill:
 		return assetPaths{
 			TargetRoot:   filepath.Join(m.ClaudeHome, "skills", asset.Slug),
 			TargetFile:   filepath.Join(m.ClaudeHome, "skills", asset.Slug, "SKILL.md"),
 			DisabledRoot: filepath.Join(m.HubHome, "disabled", "skills", asset.Slug),
 			DisabledFile: filepath.Join(m.HubHome, "disabled", "skills", asset.Slug, "SKILL.md"),
+			Manifest:     manifestPath,
+		}
+	case AssetTypeMCP:
+		target := filepath.Join(m.ClaudeHome, ".mcp.json")
+		return assetPaths{
+			TargetRoot:   target,
+			TargetFile:   target,
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "mcp", asset.Slug+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "mcp", asset.Slug+".json"),
+			Manifest:     manifestPath,
+		}
+	case AssetTypeHook:
+		target := filepath.Join(m.ClaudeHome, "settings.json")
+		return assetPaths{
+			TargetRoot:   target,
+			TargetFile:   target,
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "hooks", asset.Slug+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "hooks", asset.Slug+".json"),
+			Manifest:     manifestPath,
+		}
+	case AssetTypePlugin:
+		root := filepath.Join(m.ClaudeHome, "plugins", asset.Slug)
+		return assetPaths{
+			TargetRoot:   root,
+			TargetFile:   filepath.Join(root, "plugin.json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "plugins", asset.Slug),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "plugins", asset.Slug, "plugin.json"),
+			Manifest:     manifestPath,
+		}
+	case AssetTypeConfig:
+		root := filepath.Join(m.ClaudeHome, "configs", asset.Slug)
+		return assetPaths{
+			TargetRoot:   root,
+			TargetFile:   filepath.Join(root, asset.Slug+".json"),
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "configs", asset.Slug, asset.Slug+".json"),
 			Manifest:     manifestPath,
 		}
 	}
@@ -962,8 +1741,11 @@ func normalizeAsset(asset CatalogAsset) CatalogAsset {
 }
 
 func validateSupported(asset CatalogAsset) error {
-	if asset.Type != AssetTypeSkill && asset.Type != AssetTypeCommand {
-		return fmt.Errorf("tato verze lokální služby zatím nepodporuje typ položky %q", asset.Type)
+	switch asset.Type {
+	case AssetTypeSkill, AssetTypeCommand, AssetTypeMCP, AssetTypeHook, AssetTypePlugin, AssetTypeConfig:
+		// OK — všechny typy jsou nyní podporované, jen některé skrz merge logiku
+	default:
+		return fmt.Errorf("tato verze lokální služby nepodporuje typ položky %q", asset.Type)
 	}
 	if asset.Slug == "" {
 		return errors.New("chybí technický název položky (slug)")

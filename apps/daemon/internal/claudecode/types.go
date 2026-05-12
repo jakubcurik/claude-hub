@@ -14,9 +14,10 @@ const (
 type RiskLevel string
 
 const (
-	RiskLow    RiskLevel = "low"
-	RiskMedium RiskLevel = "medium"
-	RiskHigh   RiskLevel = "high"
+	RiskLow        RiskLevel = "low"
+	RiskMedium     RiskLevel = "medium"
+	RiskHigh       RiskLevel = "high"
+	RiskRestricted RiskLevel = "restricted"
 )
 
 type AssetFile struct {
@@ -106,4 +107,11 @@ type manifest struct {
 	Fingerprint        string    `json:"fingerprint"`
 	ContentFingerprint string    `json:"contentFingerprint"`
 	BackupPath         string    `json:"backupPath,omitempty"`
+
+	// Snapshot pro merge-style assety (MCP, hook). Umožňuje při disable/uninstall
+	// vrátit jen položku, kterou Hub přidal, a zachovat ostatní.
+	MCPServerKeys    []string          `json:"mcpServerKeys,omitempty"`
+	HookEventEntries map[string][]int  `json:"hookEventEntries,omitempty"` // event → indexy v poli hooků
+	PluginEntries    []string          `json:"pluginEntries,omitempty"`     // "scope:projectPath" identifikace
+	ContentSnapshots map[string]string `json:"contentSnapshots,omitempty"`  // path → sha256 obsahu, ke kterému patří manifest
 }

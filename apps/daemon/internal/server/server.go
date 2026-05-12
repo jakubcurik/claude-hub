@@ -67,6 +67,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/state", s.withAuth(s.handleState))
 	s.mux.HandleFunc("POST /v1/install-preview", s.withAuth(s.handleInstallPreview))
 	s.mux.HandleFunc("POST /v1/install", s.withAuth(s.handleInstall))
+	s.mux.HandleFunc("POST /v1/uninstall", s.withAuth(s.handleUninstall))
+	s.mux.HandleFunc("POST /v1/diff", s.withAuth(s.handleDiff))
 	s.mux.HandleFunc("POST /v1/set-enabled", s.withAuth(s.handleSetEnabled))
 	s.mux.HandleFunc("GET /v1/local-assets", s.withAuth(s.handleLocalAssets))
 	s.mux.HandleFunc("POST /v1/local-assets/export", s.withAuth(s.handleLocalAssetExport))
@@ -103,9 +105,14 @@ func (s *Server) handleHello(response http.ResponseWriter, request *http.Request
 			"catalog-state",
 			"install-preview",
 			"install",
+			"uninstall",
 			"enable-disable",
 			"local-assets",
 			"local-asset-export",
+			"diff",
+			"mcp-merge",
+			"hook-merge",
+			"plugin-install",
 		},
 	})
 }
@@ -142,6 +149,32 @@ func (s *Server) handleInstall(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	state, err := s.manager.Install(body.Asset)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"state": state})
+}
+
+func (s *Server) handleDiff(response http.ResponseWriter, request *http.Request) {
+	var body assetRequest
+	if !decodeBody(response, request, &body) {
+		return
+	}
+	diff, err := s.manager.Diff(body.Asset)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, diff)
+}
+
+func (s *Server) handleUninstall(response http.ResponseWriter, request *http.Request) {
+	var body assetRequest
+	if !decodeBody(response, request, &body) {
+		return
+	}
+	state, err := s.manager.Uninstall(body.Asset)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err)
 		return
@@ -188,7 +221,8 @@ func (s *Server) withAuth(handler http.HandlerFunc) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if !s.isAuthorized(request) {
 			writeJSON(response, http.StatusUnauthorized, map[string]string{
-				"error":   "Unauthorized",
+				"error":   errorTitle(http.StatusUnauthorized),
+				"code":    "unauthorized",
 				"message": "Vložte do webové aplikace párovací token lokální služby.",
 			})
 			return
@@ -262,9 +296,52 @@ func writeJSON(response http.ResponseWriter, status int, payload any) {
 
 func writeError(response http.ResponseWriter, status int, err error) {
 	writeJSON(response, status, map[string]string{
-		"error":   "Požadavek selhal",
+		"error":   errorTitle(status),
+		"code":    errorCode(status),
 		"message": err.Error(),
 	})
+}
+
+func errorTitle(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "Bad Request"
+	case http.StatusUnauthorized:
+		return "Unauthorized"
+	case http.StatusForbidden:
+		return "Forbidden"
+	case http.StatusNotFound:
+		return "Not Found"
+	case http.StatusConflict:
+		return "Conflict"
+	case http.StatusUnprocessableEntity:
+		return "Unprocessable Entity"
+	case http.StatusInternalServerError:
+		return "Internal Server Error"
+	default:
+		return "Error"
+	}
+}
+
+func errorCode(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusUnprocessableEntity:
+		return "unprocessable_entity"
+	case http.StatusInternalServerError:
+		return "internal_error"
+	default:
+		return "error"
+	}
 }
 
 var pairPageTemplate = template.Must(template.New("pair").Parse(`<!doctype html>
@@ -273,12 +350,28 @@ var pairPageTemplate = template.Must(template.New("pair").Parse(`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Párování zařízení | Claude Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      color-scheme: light;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #172126;
-      background: #f4f1ea;
+      color-scheme: dark;
+      --bg: #141413;
+      --surface: #1B1B1A;
+      --surface-2: #262624;
+      --border: #2A2A28;
+      --border-strong: #3A3A37;
+      --ink: #F5F4ED;
+      --ink-muted: #C8C5BD;
+      --muted: #8B8780;
+      --accent: #F26B3D;
+      --accent-hover: #FF8358;
+      --accent-active: #D8551F;
+      --success: #4ADE80;
+      font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
     }
     body {
       display: grid;
@@ -290,54 +383,110 @@ var pairPageTemplate = template.Must(template.New("pair").Parse(`<!doctype html>
     main {
       display: grid;
       width: min(440px, 100%);
-      gap: 18px;
-      padding: 24px;
-      border: 1px solid #ded8cc;
-      border-radius: 8px;
-      background: #ffffff;
-      box-shadow: 0 18px 46px rgba(23, 33, 38, 0.08);
+      gap: 20px;
+      padding: 32px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #1B1B1A;
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand strong {
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .brand span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
     }
     h1 {
       margin: 0;
+      font-family: "Space Grotesk", sans-serif;
       font-size: 24px;
-      line-height: 1.15;
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+      color: var(--ink);
     }
     p {
       margin: 0;
-      color: #66737a;
-      line-height: 1.5;
+      color: var(--ink-muted);
+      line-height: 1.55;
+      font-size: 14px;
     }
     code {
       display: block;
       overflow-wrap: anywhere;
-      padding: 10px;
-      border-radius: 7px;
-      background: #fbfaf7;
-      color: #172126;
-      font-size: 13px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
     }
     button {
-      min-height: 42px;
-      border: 1px solid #1f8a70;
-      border-radius: 8px;
-      background: #1f8a70;
-      color: #ffffff;
+      min-height: 44px;
+      padding: 0 18px;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      background: var(--accent);
+      color: #1B1B1A;
       font: inherit;
-      font-weight: 800;
+      font-weight: 600;
+      font-size: 14px;
       cursor: pointer;
+      transition: background 140ms ease, border-color 140ms ease;
     }
     button:hover {
-      background: #12604e;
-      border-color: #12604e;
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+    button:active {
+      background: var(--accent-active);
+      border-color: var(--accent-active);
+    }
+    button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .success {
-      color: #12604e;
-      font-weight: 800;
+      color: var(--success);
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
   <main>
+    <div class="brand">
+      <div class="brand-mark">CH</div>
+      <div>
+        <strong>Claude Hub</strong>
+        <span>Propojení zařízení</span>
+      </div>
+    </div>
     <h1>Povolit propojení zařízení</h1>
     <p>Claude Hub chce propojit webový katalog s lokální službou Claude Code na tomto počítači.</p>
     <code>{{.ClaudeHome}}</code>
