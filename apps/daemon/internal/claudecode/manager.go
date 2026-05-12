@@ -1641,10 +1641,11 @@ func (m *Manager) settingsHookAsset(path string, localID string, name string, sc
 }
 
 func (m *Manager) workspaceAssets() ([]LocalAsset, error) {
-	roots := workspaceRoots()
 	assets := make([]LocalAsset, 0)
+	visited := map[string]bool{}
 
-	for _, root := range roots {
+	// 1) Env-based workspace roots (manuální override) — walkdir hledá .claude/ ve všech podadresářích.
+	for _, root := range workspaceRoots() {
 		err := filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
@@ -1660,6 +1661,11 @@ func (m *Manager) workspaceAssets() ([]LocalAsset, error) {
 			}
 
 			projectRoot := filepath.Dir(current)
+			key := strings.ToLower(filepath.Clean(projectRoot))
+			if visited[key] {
+				return filepath.SkipDir
+			}
+			visited[key] = true
 			projectName := filepath.Base(projectRoot)
 			projectSlug := projectSlugFromPath(projectRoot)
 			assets = append(assets, m.workspaceClaudeDirAssets(current, projectRoot, projectName, projectSlug)...)
@@ -1670,7 +1676,60 @@ func (m *Manager) workspaceAssets() ([]LocalAsset, error) {
 		}
 	}
 
+	// 2) Auto-detekce projektů z ~/.claude.json (zero-config). Daemon vidí každý
+	// projekt, ve kterém Claude Code už běžel. V Dockeru se cesty mimo mount
+	// tichounce přeskočí — uživatel buď přidá mount, nebo si nainstaluje daemon
+	// nativně.
+	for _, projectRoot := range m.projectsFromClaudeJson() {
+		key := strings.ToLower(filepath.Clean(projectRoot))
+		if visited[key] {
+			continue
+		}
+		claudeDir := filepath.Join(projectRoot, ".claude")
+		info, err := os.Stat(claudeDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		visited[key] = true
+		projectName := filepath.Base(projectRoot)
+		projectSlug := projectSlugFromPath(projectRoot)
+		assets = append(assets, m.workspaceClaudeDirAssets(claudeDir, projectRoot, projectName, projectSlug)...)
+	}
+
 	return assets, nil
+}
+
+// projectsFromClaudeJson vrátí cesty k projektům, ve kterých už uživatel
+// spustil Claude Code. Claude CLI je ukládá do ~/.claude.json sekce "projects".
+// V Dockeru jsou cesty v host formátu (D:/Dev/foo) — daemon je stejně zkusí
+// otevřít a neexistující tichounce přeskočí.
+func (m *Manager) projectsFromClaudeJson() []string {
+	bytes, err := os.ReadFile(m.userClaudeJsonPath())
+	if err != nil {
+		return nil
+	}
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(bytes, &raw); err != nil {
+		return nil
+	}
+	projectsRaw, ok := raw["projects"]
+	if !ok || len(projectsRaw) == 0 {
+		return nil
+	}
+	projects := map[string]json.RawMessage{}
+	if err := json.Unmarshal(projectsRaw, &projects); err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(projects))
+	for path := range projects {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		paths = append(paths, filepath.Clean(path))
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (m *Manager) workspaceClaudeDirAssets(claudeDir string, projectRoot string, projectName string, projectSlug string) []LocalAsset {
