@@ -39,6 +39,9 @@ interface CatalogPublishResponse {
 
 export async function publishLocalAssetToCatalog(
   assetExport: LocalAssetExport,
+  overridesOrSignature?:
+    | { name?: string; summary?: string }
+    | { signature: string; publicKey: string },
   signature?: { signature: string; publicKey: string }
 ): Promise<CatalogAsset> {
   const user = await getCurrentUser();
@@ -47,8 +50,18 @@ export async function publishLocalAssetToCatalog(
     throw new Error("Nejdřív se přihlaste, aby bylo možné nahrát položku do katalogu.");
   }
 
+  // Pozadu kompatibilní volání: druhý parametr může být signature (starý tvar) i overrides (nový).
+  let overrides: { name?: string; summary?: string } | undefined;
+  let sig: { signature: string; publicKey: string } | undefined;
+  if (overridesOrSignature && "signature" in overridesOrSignature) {
+    sig = overridesOrSignature;
+  } else {
+    overrides = overridesOrSignature;
+    sig = signature;
+  }
+
   const teamId = hubTeamId();
-  const asset = toCatalogAsset(assetExport, user);
+  const asset = toCatalogAsset(assetExport, user, overrides);
 
   const response = await fetch(`${hubApiUrl()}/v1/teams/${teamId}/catalog`, {
     method: "POST",
@@ -56,7 +69,7 @@ export async function publishLocalAssetToCatalog(
       "content-type": "application/json",
       authorization: `Bearer ${token}`
     },
-    body: JSON.stringify({ asset, signature })
+    body: JSON.stringify({ asset, signature: sig })
   });
 
   const payload = (await response.json().catch(() => ({}))) as Partial<CatalogPublishResponse> & {
@@ -333,15 +346,21 @@ export async function listAssetVersions(type: string, slug: string) {
   }
 }
 
-function toCatalogAsset(assetExport: LocalAssetExport, user: { id: string; email: string }): CatalogAsset {
+function toCatalogAsset(
+  assetExport: LocalAssetExport,
+  user: { id: string; email: string },
+  overrides?: { name?: string; summary?: string }
+): CatalogAsset {
   const now = new Date().toISOString();
+  const name = overrides?.name?.trim() || assetExport.name;
+  const summary = overrides?.summary?.trim() ?? assetExport.summary;
 
   return {
     id: `${assetExport.type}:${assetExport.slug}`,
     type: assetExport.type,
     slug: assetExport.slug,
-    name: assetExport.name,
-    summary: assetExport.summary,
+    name,
+    summary,
     description: assetExport.description,
     owner: {
       id: user.id,

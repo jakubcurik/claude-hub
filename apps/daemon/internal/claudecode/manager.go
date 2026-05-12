@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1166,7 +1167,7 @@ func (m *Manager) LocalAssets() ([]LocalAsset, error) {
 	assets = append(assets, m.skillAssets(filepath.Join(m.ClaudeHome, "skills"), "user", "", "", "", true)...)
 	assets = append(assets, m.commandAssets(filepath.Join(m.ClaudeHome, "commands"), "user", "", "", "", true)...)
 	assets = append(assets, m.entryAssets(filepath.Join(m.ClaudeHome, "hooks"), AssetTypeHook, "Hook", "user", "", "")...)
-	assets = append(assets, m.settingsHookAsset(filepath.Join(m.ClaudeHome, "settings.json"), "hook:user-settings", "Nastavení uživatelských hooků", "user", "", "")...)
+	assets = append(assets, m.settingsHookAssets(filepath.Join(m.ClaudeHome, "settings.json"), "hook:user-settings", "user", "", "")...)
 	assets = append(assets, m.pluginAssets()...)
 	assets = append(assets, m.userMcpAssets()...)
 	assets = append(assets, m.settingsConfigAssets(filepath.Join(m.ClaudeHome, "settings.json"), "user", "", "", "config:user")...)
@@ -1690,25 +1691,75 @@ func (m *Manager) userMcpAssets() []LocalAsset {
 	return assets
 }
 
-func (m *Manager) settingsHookAsset(path string, localID string, name string, scope string, projectName string, projectPath string) []LocalAsset {
-	hooks, err := readSettingsSection(path, "hooks")
-	if err != nil || len(hooks) == 0 {
+// settingsHookAssets rozdělí hooks sekci v settings.json na samostatné položky —
+// jednu za každý matcher block v každém eventu. Granularita: 1 entry = 1 LocalAsset.
+// Paralela k mcpServerAssets, kde 1 MCP server = 1 LocalAsset.
+func (m *Manager) settingsHookAssets(path string, localIDPrefix string, scope string, projectName string, projectPath string) []LocalAsset {
+	doc, err := readHookDoc(path)
+	if err != nil || doc == nil || len(doc.Hooks) == 0 {
 		return nil
 	}
 
-	return []LocalAsset{{
-		LocalAssetID:       localID,
-		Type:               AssetTypeHook,
-		Slug:               Slugify(name),
-		Name:               name,
-		Path:               path,
-		Scope:              scope,
-		ProjectName:        projectName,
-		ProjectPath:        projectPath,
-		ManagedByHub:       false,
-		Warnings:           textWarnings(string(hooks)),
-		ContentFingerprint: shaText(string(hooks)),
-	}}
+	assets := make([]LocalAsset, 0)
+	for _, event := range sortedHookEventKeys(doc.Hooks) {
+		entries := doc.Hooks[event]
+		for index, entry := range entries {
+			matcher := hookEntryMatcher(entry)
+			displayName := "Hook: " + event
+			if matcher != "" && matcher != "*" && matcher != ".*" {
+				displayName += " – " + matcher
+			}
+			assets = append(assets, LocalAsset{
+				LocalAssetID:       fmt.Sprintf("%s:%s:%d", localIDPrefix, event, index),
+				Type:               AssetTypeHook,
+				Slug:               Slugify(fmt.Sprintf("%s-%d", event, index)),
+				Name:               displayName,
+				Path:               fmt.Sprintf("%s :: hooks.%s[%d]", path, event, index),
+				Scope:              scope,
+				ProjectName:        projectName,
+				ProjectPath:        projectPath,
+				ManagedByHub:       false,
+				Warnings:           textWarnings(string(entry)),
+				ContentFingerprint: shaText(string(entry)),
+			})
+		}
+	}
+	return assets
+}
+
+// hookEntryMatcher extrahuje pole "matcher" z hook entry pro UI label.
+func hookEntryMatcher(entry json.RawMessage) string {
+	var parsed struct {
+		Matcher string `json:"matcher"`
+	}
+	if err := json.Unmarshal(entry, &parsed); err != nil {
+		return ""
+	}
+	return parsed.Matcher
+}
+
+// splitSettingsHookPath rozdělí cestu typu "<file> :: hooks.<event>[<index>]" na
+// (soubor, event, index). Vrátí (path, "", 0, false) pokud řetězec není ve formátu.
+func splitSettingsHookPath(path string) (string, string, int, bool) {
+	const sep = " :: hooks."
+	idx := strings.Index(path, sep)
+	if idx < 0 {
+		return path, "", 0, false
+	}
+	filePart := strings.TrimSpace(path[:idx])
+	rest := strings.TrimSpace(path[idx+len(sep):])
+	open := strings.LastIndex(rest, "[")
+	close := strings.LastIndex(rest, "]")
+	if open < 0 || close < 0 || close <= open+1 {
+		return path, "", 0, false
+	}
+	event := strings.TrimSpace(rest[:open])
+	indexStr := rest[open+1 : close]
+	indexNum, err := strconv.Atoi(indexStr)
+	if err != nil || filePart == "" || event == "" {
+		return path, "", 0, false
+	}
+	return filePart, event, indexNum, true
 }
 
 func (m *Manager) workspaceAssets() ([]LocalAsset, error) {
@@ -1865,7 +1916,7 @@ func (m *Manager) workspaceClaudeDirAssets(claudeDir string, projectRoot string,
 	assets = append(assets, m.skillAssets(filepath.Join(claudeDir, "skills"), "project", projectName, projectRoot, projectSlug, false)...)
 	assets = append(assets, m.commandAssets(filepath.Join(claudeDir, "commands"), "project", projectName, projectRoot, projectSlug, false)...)
 	assets = append(assets, m.entryAssets(filepath.Join(claudeDir, "hooks"), AssetTypeHook, "Hook", "project", projectName, projectRoot)...)
-	assets = append(assets, m.settingsHookAsset(filepath.Join(claudeDir, "settings.json"), "project:"+projectSlug+":hook:settings", projectName+" - nastavení hooků", "project", projectName, projectRoot)...)
+	assets = append(assets, m.settingsHookAssets(filepath.Join(claudeDir, "settings.json"), "project:"+projectSlug+":hook:settings", "project", projectName, projectRoot)...)
 	assets = append(assets, m.entryAssets(filepath.Join(claudeDir, "plugins"), AssetTypePlugin, "Plugin", "project", projectName, projectRoot)...)
 	assets = append(assets, m.mcpServerAssets(filepath.Join(claudeDir, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp")...)
 	assets = append(assets, m.mcpServerAssets(filepath.Join(projectRoot, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp-root")...)
@@ -1894,8 +1945,31 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	if asset.Type == AssetTypeSkill && strings.EqualFold(filepath.Base(source), "SKILL.md") {
 		source = filepath.Dir(source)
 	}
-	if asset.Type == AssetTypeHook && strings.EqualFold(filepath.Base(source), "settings.json") {
-		return settingsSectionExport(source, "hooks", "settings.hooks.json")
+	if asset.Type == AssetTypeHook {
+		if filePath, event, index, ok := splitSettingsHookPath(source); ok {
+			doc, err := readHookDoc(filePath)
+			if err != nil {
+				return nil, err
+			}
+			entries, exists := doc.Hooks[event]
+			if !exists || index < 0 || index >= len(entries) {
+				return nil, fmt.Errorf("hook %s[%d] už v %s není", event, index, filePath)
+			}
+			payload := map[string]map[string][]json.RawMessage{
+				"hooks": {event: {entries[index]}},
+			}
+			content, err := json.MarshalIndent(payload, "", "  ")
+			if err != nil {
+				return nil, err
+			}
+			return []AssetFile{{
+				Path:    "hook.json",
+				Content: string(append(content, '\n')),
+			}}, nil
+		}
+		if strings.EqualFold(filepath.Base(source), "settings.json") {
+			return settingsSectionExport(source, "hooks", "settings.hooks.json")
+		}
 	}
 	if asset.Type == AssetTypeMCP {
 		filePath, serverKey, ok := splitMcpServerPath(source)

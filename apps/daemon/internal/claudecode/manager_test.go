@@ -282,11 +282,51 @@ func TestListsUserSettingsHooksWithoutSharingFullSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export failed: %v", err)
 	}
-	if len(exported.Files) != 1 || exported.Files[0].Path != "settings.hooks.json" {
+	if len(exported.Files) != 1 || exported.Files[0].Path != "hook.json" {
 		t.Fatalf("unexpected export files: %+v", exported.Files)
 	}
 	if strings.Contains(exported.Files[0].Content, "permissions") {
 		t.Fatalf("export leaked non-hook settings: %s", exported.Files[0].Content)
+	}
+	if !strings.Contains(exported.Files[0].Content, "PreToolUse") || !strings.Contains(exported.Files[0].Content, "echo ok") {
+		t.Fatalf("export missing hook entry payload: %s", exported.Files[0].Content)
+	}
+}
+
+func TestListsEachSettingsHookEntryAsSeparateAsset(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	claudeHome := t.TempDir()
+	settings := `{
+  "hooks": {
+    "PostToolUse": [
+      {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "echo a"}]}
+    ],
+    "Stop": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "echo b"}]},
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "echo c"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(claudeHome, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatalf("write settings failed: %v", err)
+	}
+
+	manager := NewManager(claudeHome)
+	assets, err := manager.LocalAssets()
+	if err != nil {
+		t.Fatalf("local assets failed: %v", err)
+	}
+
+	hookCount := 0
+	for _, a := range assets {
+		if a.Type == AssetTypeHook {
+			hookCount++
+		}
+	}
+	if hookCount != 3 {
+		t.Fatalf("expected 3 hook assets (one per matcher block), got %d: %+v", hookCount, assets)
 	}
 }
 

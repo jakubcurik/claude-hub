@@ -19,6 +19,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AssetDiff,
+  AssetFile,
   AssetType,
   CatalogAsset,
   Collection,
@@ -73,6 +74,11 @@ interface DaemonInstallConfig {
   wingetId: string;
 }
 
+interface PublishFields {
+  defaultName: string;
+  defaultSummary: string;
+}
+
 interface ModalState {
   title: string;
   intro: string;
@@ -80,7 +86,8 @@ interface ModalState {
   operations: InstallOperation[];
   warnings: string[];
   requiredEnv?: string[];
-  onConfirm: () => Promise<void>;
+  publishFields?: PublishFields;
+  onConfirm: (overrides?: { name?: string; summary?: string }) => Promise<void>;
 }
 
 const navItems: SidebarNavItem[] = [
@@ -170,6 +177,13 @@ export function CatalogExperience({
   const [generatedKey, setGeneratedKey] = useState<{ label: string; privateKeyPem: string; fingerprint: string } | null>(
     null
   );
+  const [detailModal, setDetailModal] = useState<{
+    name: string;
+    type: AssetType;
+    subtitle?: string;
+    files: AssetFile[];
+    loading?: boolean;
+  } | null>(null);
   const isAdmin = membership.role === "owner" || membership.role === "admin";
   const isOwner = membership.role === "owner";
   const [activeView, setActiveView] = useState<View>(initialView ?? "catalog");
@@ -363,6 +377,29 @@ export function CatalogExperience({
     }
   }
 
+  function openAssetDetail(asset: CatalogAsset) {
+    setDetailModal({
+      name: asset.name,
+      type: asset.type,
+      subtitle: `${typeLabels[asset.type]} · v${asset.version} · ${asset.owner.name}`,
+      files: asset.files ?? []
+    });
+  }
+
+  async function openLocalAssetDetail(asset: LocalAsset) {
+    const subtitle = asset.projectPath
+      ? `${typeLabels[asset.type]} · ${asset.projectName} · ${asset.path}`
+      : `${typeLabels[asset.type]} · Osobní · ${asset.path}`;
+    setDetailModal({ name: asset.name, type: asset.type, subtitle, files: [], loading: true });
+    try {
+      const exported = await client.exportLocalAsset(asset.localAssetId);
+      setDetailModal({ name: asset.name, type: asset.type, subtitle, files: exported.files });
+    } catch (error) {
+      setDetailModal(null);
+      showToast(error instanceof Error ? error.message : "Obsah se nepodařilo načíst.");
+    }
+  }
+
   async function openVersionsModal(asset: CatalogAsset) {
     try {
       const { listAssetVersions } = await import("@/app/actions");
@@ -444,8 +481,12 @@ export function CatalogExperience({
         ],
         warnings: exported.warnings,
         requiredEnv: exported.requiredEnv,
-        onConfirm: async () => {
-          const published = await publishLocalAssetToCatalog(exported);
+        publishFields: {
+          defaultName: exported.name,
+          defaultSummary: exported.summary
+        },
+        onConfirm: async (overrides) => {
+          const published = await publishLocalAssetToCatalog(exported, overrides);
           setModal(null);
           await refresh();
           setActiveView("catalog");
@@ -534,6 +575,7 @@ export function CatalogExperience({
                     onDisable={() => setEnabled(asset, false)}
                     onEnable={() => setEnabled(asset, true)}
                     onInstall={() => requestInstall(asset)}
+                    onSelect={() => openAssetDetail(asset)}
                     onShowVersions={() => openVersionsModal(asset)}
                     onUninstall={() => requestUninstall(asset)}
                     state={states[asset.id]}
@@ -573,7 +615,21 @@ export function CatalogExperience({
               items={groupedLocalAssets.map((group) => {
                 const primary = group[0];
                 return (
-                  <article className="list-row" key={primary.localAssetId}>
+                  <article
+                    aria-label={`Zobrazit obsah: ${primary.name}`}
+                    className="list-row selectable"
+                    key={primary.localAssetId}
+                    onClick={() => openLocalAssetDetail(primary)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openLocalAssetDetail(primary);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
                     <div>
                       <div className="row-title">
                         <TypePill type={primary.type} />
@@ -594,7 +650,10 @@ export function CatalogExperience({
                     <button
                       className="secondary"
                       disabled={!isConnected || busy}
-                      onClick={() => requestCatalogUpload(primary)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestCatalogUpload(primary);
+                      }}
                       type="button"
                     >
                       <FolderUp size={16} />
@@ -723,10 +782,10 @@ export function CatalogExperience({
           busy={busy}
           modal={modal}
           onClose={() => setModal(null)}
-          onConfirm={async () => {
+          onConfirm={async (overrides) => {
             setBusy(true);
             try {
-              await modal.onConfirm();
+              await modal.onConfirm(overrides);
             } catch (error) {
               showToast(error instanceof Error ? error.message : "Akce se nepodařila dokončit.");
             } finally {
@@ -758,6 +817,17 @@ export function CatalogExperience({
         <KeyRevealModal
           generatedKey={generatedKey}
           onClose={() => setGeneratedKey(null)}
+        />
+      ) : null}
+
+      {detailModal ? (
+        <AssetDetailModal
+          files={detailModal.files}
+          loading={detailModal.loading}
+          name={detailModal.name}
+          onClose={() => setDetailModal(null)}
+          subtitle={detailModal.subtitle}
+          type={detailModal.type}
         />
       ) : null}
 
@@ -987,6 +1057,7 @@ function AssetCard({
   onDisable,
   onEnable,
   onInstall,
+  onSelect,
   onShowVersions,
   onUninstall,
   state
@@ -997,6 +1068,7 @@ function AssetCard({
   onDisable: () => void;
   onEnable: () => void;
   onInstall: () => void;
+  onSelect: () => void;
   onShowVersions: () => void;
   onUninstall: () => void;
   state?: LocalAssetState;
@@ -1005,8 +1077,23 @@ function AssetCard({
   // Daemon podporuje plný lifecycle pro všechny typy (skill, command, mcp, hook, plugin, config).
   const supported = true;
 
+  function handleKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelect();
+    }
+  }
+
   return (
-    <article className="asset-card">
+    <article
+      aria-label={`Zobrazit obsah: ${asset.name}`}
+      className="asset-card selectable"
+      onClick={onSelect}
+      onKeyDown={handleKeyDown}
+      role="button"
+      tabIndex={0}
+    >
       <div className="card-head">
         <TypePill type={asset.type} />
         <span className={`status ${status.tone}`}>{status.label}</span>
@@ -1026,7 +1113,7 @@ function AssetCard({
           <span key={tag}>{tag}</span>
         ))}
       </div>
-      <div className="card-actions">
+      <div className="card-actions" onClick={(event) => event.stopPropagation()}>
         {renderAssetAction({ connected, onDisable, onEnable, onInstall, state, supported })}
         {supported && connected && state?.localChanges ? (
           <button className="secondary" onClick={onDiff} type="button" title="Zobrazit změny">
@@ -1341,8 +1428,19 @@ function InstallModal({
   busy: boolean;
   modal: ModalState;
   onClose: () => void;
-  onConfirm: () => Promise<void>;
+  onConfirm: (overrides?: { name?: string; summary?: string }) => Promise<void>;
 }) {
+  const [publishName, setPublishName] = useState(modal.publishFields?.defaultName ?? "");
+  const [publishSummary, setPublishSummary] = useState(modal.publishFields?.defaultSummary ?? "");
+
+  function handleConfirm() {
+    if (modal.publishFields) {
+      void onConfirm({ name: publishName, summary: publishSummary });
+    } else {
+      void onConfirm();
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="modal-title" aria-modal="true" className="modal" role="dialog">
@@ -1356,6 +1454,30 @@ function InstallModal({
           </button>
         </div>
         <div className="modal-body">
+          {modal.publishFields ? (
+            <div className="publish-fields">
+              <label>
+                <span>Název v katalogu</span>
+                <input
+                  onChange={(event) => setPublishName(event.target.value)}
+                  placeholder={modal.publishFields.defaultName}
+                  type="text"
+                  value={publishName}
+                />
+                <small>Volitelné — pokud necháte prázdné, použije se „{modal.publishFields.defaultName}".</small>
+              </label>
+              <label>
+                <span>Krátký popis</span>
+                <textarea
+                  onChange={(event) => setPublishSummary(event.target.value)}
+                  placeholder="Jednou větou, k čemu položka slouží."
+                  rows={2}
+                  value={publishSummary}
+                />
+              </label>
+            </div>
+          ) : null}
+
           <div className="operation-list">
             {modal.operations.map((operation) => (
               <div className="operation" key={`${operation.type}-${operation.path}`}>
@@ -1393,7 +1515,7 @@ function InstallModal({
           <button className="secondary" disabled={busy} onClick={onClose} type="button">
             Zrušit
           </button>
-          <button className="primary" disabled={busy} onClick={onConfirm} type="button">
+          <button className="primary" disabled={busy} onClick={handleConfirm} type="button">
             {modal.confirmLabel}
           </button>
         </div>
@@ -1804,6 +1926,102 @@ function DiffModal({
           <button className="secondary" onClick={onClose} type="button">
             Zavřít
           </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AssetDetailModal({
+  files,
+  loading,
+  name,
+  onClose,
+  subtitle,
+  type
+}: {
+  files: AssetFile[];
+  loading?: boolean;
+  name: string;
+  onClose: () => void;
+  subtitle?: string;
+  type: AssetType;
+}) {
+  const [activePath, setActivePath] = useState<string>(files[0]?.path ?? "");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (files.length > 0 && !files.find((file) => file.path === activePath)) {
+      setActivePath(files[0].path);
+    }
+  }, [files, activePath]);
+
+  const activeFile = files.find((file) => file.path === activePath) ?? files[0];
+
+  async function copyContent() {
+    if (!activeFile) return;
+    await navigator.clipboard.writeText(activeFile.content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        aria-labelledby="detail-modal-title"
+        aria-modal="true"
+        className="modal wide asset-detail-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-head">
+          <div>
+            <h2 id="detail-modal-title">
+              <TypePill type={type} /> {name}
+            </h2>
+            {subtitle ? <p>{subtitle}</p> : null}
+          </div>
+          <button aria-label="Zavřít" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="modal-body asset-detail-body">
+          {loading ? (
+            <p className="muted">Načítám obsah…</p>
+          ) : files.length === 0 ? (
+            <p className="muted">Tato položka neobsahuje žádné soubory.</p>
+          ) : (
+            <div className="asset-detail-layout">
+              <aside className="asset-detail-files" aria-label="Seznam souborů">
+                {files.map((file) => (
+                  <button
+                    className={file.path === activeFile?.path ? "active" : ""}
+                    key={file.path}
+                    onClick={() => setActivePath(file.path)}
+                    title={file.path}
+                    type="button"
+                  >
+                    <FileText size={14} />
+                    <span>{file.path}</span>
+                  </button>
+                ))}
+              </aside>
+              <div className="asset-detail-content">
+                {activeFile ? (
+                  <>
+                    <header>
+                      <code>{activeFile.path}</code>
+                      <button className="secondary" onClick={copyContent} type="button">
+                        <Copy size={14} />
+                        {copied ? "Zkopírováno" : "Kopírovat"}
+                      </button>
+                    </header>
+                    <pre>{activeFile.content || "(prázdný soubor)"}</pre>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>
