@@ -280,6 +280,20 @@ export function CatalogExperience({
     [localAssets, localFilter]
   );
 
+  // Seskupení identických položek podle (type, slug, contentFingerprint).
+  // Stejný skill ležící v několika projektech (s identickým obsahem) se zobrazí
+  // jako jedna karta se seznamem zdrojů.
+  const groupedLocalAssets = useMemo(() => {
+    const groups = new Map<string, LocalAsset[]>();
+    for (const asset of visibleLocalAssets) {
+      const key = `${asset.type}:${asset.slug}:${asset.contentFingerprint ?? asset.localAssetId}`;
+      const list = groups.get(key) ?? [];
+      list.push(asset);
+      groups.set(key, list);
+    }
+    return Array.from(groups.values()).sort((a, b) => a[0].name.localeCompare(b[0].name, "cs"));
+  }, [visibleLocalAssets]);
+
   const installedCount = Object.values(states).filter((state) => state.installed).length;
   const updateCount = Object.values(states).filter((state) => state.updateAvailable).length;
 
@@ -670,30 +684,39 @@ export function CatalogExperience({
             <ListSection
               emptyDetail="Lokální stav se načítá přes lokální službu. Prohlížeč k souborům nepřistupuje přímo."
               emptyText={localEmptyText(isConnected, localAssets.length, visibleLocalAssets.length)}
-              items={visibleLocalAssets.map((asset) => (
-                <article className="list-row" key={asset.localAssetId}>
-                  <div>
-                    <div className="row-title">
-                      <TypePill type={asset.type} />
-                      <span className={asset.scope === "project" ? "scope-pill project" : "scope-pill user"}>
-                        {asset.scope === "project" ? asset.projectName : "Osobní"}
-                      </span>
-                      <strong>{asset.name}</strong>
+              items={groupedLocalAssets.map((group) => {
+                const primary = group[0];
+                return (
+                  <article className="list-row" key={primary.localAssetId}>
+                    <div>
+                      <div className="row-title">
+                        <TypePill type={primary.type} />
+                        {group.map((item) => (
+                          <span
+                            className={item.scope === "project" ? "scope-pill project" : "scope-pill user"}
+                            key={item.localAssetId}
+                            title={item.projectPath || item.path}
+                          >
+                            {item.scope === "project" ? item.projectName : "Osobní"}
+                          </span>
+                        ))}
+                        <strong>{primary.name}</strong>
+                      </div>
+                      <p>{primary.projectPath ? `${primary.projectPath} -> ${primary.path}` : primary.path}</p>
+                      {primary.warnings.length > 0 ? <WarningLine warnings={primary.warnings} /> : null}
                     </div>
-                    <p>{asset.projectPath ? `${asset.projectPath} -> ${asset.path}` : asset.path}</p>
-                    {asset.warnings.length > 0 ? <WarningLine warnings={asset.warnings} /> : null}
-                  </div>
-                  <button
-                    className="secondary"
-                    disabled={!isConnected || busy}
-                    onClick={() => requestCatalogUpload(asset)}
-                    type="button"
-                  >
-                    <FolderUp size={16} />
-                    Nahrát do katalogu
-                  </button>
-                </article>
-              ))}
+                    <button
+                      className="secondary"
+                      disabled={!isConnected || busy}
+                      onClick={() => requestCatalogUpload(primary)}
+                      type="button"
+                    >
+                      <FolderUp size={16} />
+                      Nahrát do katalogu
+                    </button>
+                  </article>
+                );
+              })}
             />
           </section>
         ) : null}

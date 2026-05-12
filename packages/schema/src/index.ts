@@ -182,6 +182,8 @@ export interface LocalAsset {
   projectPath?: string;
   managedByHub: boolean;
   warnings: string[];
+  /** SHA-256 obsahu položky — slouží UI k seskupení identických kopií napříč projekty. */
+  contentFingerprint?: string;
 }
 
 export interface LocalAssetExport {

@@ -1237,16 +1237,17 @@ func (m *Manager) skillAssets(skillsRoot string, scope string, projectName strin
 			continue
 		}
 		assets = append(assets, LocalAsset{
-			LocalAssetID: localAssetID(scope, projectSlug, AssetTypeSkill, slug),
-			Type:         AssetTypeSkill,
-			Slug:         slug,
-			Name:         markdownTitle(string(content), entry.Name()),
-			Path:         filePath,
-			Scope:        scope,
-			ProjectName:  projectName,
-			ProjectPath:  projectPath,
-			ManagedByHub: managedByHub,
-			Warnings:     textWarnings(string(content)),
+			LocalAssetID:       localAssetID(scope, projectSlug, AssetTypeSkill, slug),
+			Type:               AssetTypeSkill,
+			Slug:               slug,
+			Name:               markdownTitle(string(content), entry.Name()),
+			Path:               filePath,
+			Scope:              scope,
+			ProjectName:        projectName,
+			ProjectPath:        projectPath,
+			ManagedByHub:       managedByHub,
+			Warnings:           textWarnings(string(content)),
+			ContentFingerprint: shaText(string(content)),
 		})
 	}
 	return assets
@@ -1270,16 +1271,17 @@ func (m *Manager) commandAssets(commandsRoot string, scope string, projectName s
 			continue
 		}
 		assets = append(assets, LocalAsset{
-			LocalAssetID: localAssetID(scope, projectSlug, AssetTypeCommand, slug),
-			Type:         AssetTypeCommand,
-			Slug:         slug,
-			Name:         markdownTitle(string(content), "/"+slug),
-			Path:         filePath,
-			Scope:        scope,
-			ProjectName:  projectName,
-			ProjectPath:  projectPath,
-			ManagedByHub: managedByHub,
-			Warnings:     textWarnings(string(content)),
+			LocalAssetID:       localAssetID(scope, projectSlug, AssetTypeCommand, slug),
+			Type:               AssetTypeCommand,
+			Slug:               slug,
+			Name:               markdownTitle(string(content), "/"+slug),
+			Path:               filePath,
+			Scope:              scope,
+			ProjectName:        projectName,
+			ProjectPath:        projectPath,
+			ManagedByHub:       managedByHub,
+			Warnings:           textWarnings(string(content)),
+			ContentFingerprint: shaText(string(content)),
 		})
 	}
 	return assets
@@ -1301,19 +1303,45 @@ func (m *Manager) entryAssets(root string, assetType AssetType, fallbackName str
 		name, warnings := m.entryMetadata(itemPath, entry, fallbackName)
 		projectSlug := projectSlugFromPath(projectPath)
 		assets = append(assets, LocalAsset{
-			LocalAssetID: localAssetID(scope, projectSlug, assetType, slug),
-			Type:         assetType,
-			Slug:         slug,
-			Name:         name,
-			Path:         itemPath,
-			Scope:        scope,
-			ProjectName:  projectName,
-			ProjectPath:  projectPath,
-			ManagedByHub: false,
-			Warnings:     warnings,
+			LocalAssetID:       localAssetID(scope, projectSlug, assetType, slug),
+			Type:               assetType,
+			Slug:               slug,
+			Name:               name,
+			Path:               itemPath,
+			Scope:              scope,
+			ProjectName:        projectName,
+			ProjectPath:        projectPath,
+			ManagedByHub:       false,
+			Warnings:           warnings,
+			ContentFingerprint: entryFingerprint(itemPath, entry),
 		})
 	}
 	return assets
+}
+
+// entryFingerprint vrátí SHA-256 obsahu položky (soubor) nebo prvního
+// rozpoznaného manifestu uvnitř adresáře. Slouží UI pro detekci duplikátů
+// napříč projekty.
+func entryFingerprint(path string, entry os.DirEntry) string {
+	if !entry.IsDir() {
+		content, err := readSmallTextFile(path)
+		if err != nil {
+			return ""
+		}
+		return shaText(content)
+	}
+	for _, candidate := range []string{
+		filepath.Join(path, "plugin.json"),
+		filepath.Join(path, ".claude-plugin", "plugin.json"),
+		filepath.Join(path, "hook.json"),
+		filepath.Join(path, "README.md"),
+	} {
+		content, err := readSmallTextFile(candidate)
+		if err == nil {
+			return shaText(content)
+		}
+	}
+	return ""
 }
 
 func (m *Manager) entryMetadata(path string, entry os.DirEntry, fallbackName string) (string, []string) {
@@ -1440,17 +1468,31 @@ func (m *Manager) pluginAsset(pluginKey string, pluginSlug string, entries []ins
 		warnings = append(warnings, pluginUsageSummary(len(entries), projects, versions))
 	}
 
+	fingerprint := ""
+	if selected.path != "" {
+		for _, candidate := range []string{
+			filepath.Join(selected.path, "plugin.json"),
+			filepath.Join(selected.path, ".claude-plugin", "plugin.json"),
+		} {
+			if content, err := readSmallTextFile(candidate); err == nil {
+				fingerprint = shaText(content)
+				break
+			}
+		}
+	}
+
 	return LocalAsset{
-		LocalAssetID: "plugin:" + pluginSlug,
-		Type:         AssetTypePlugin,
-		Slug:         pluginSlug,
-		Name:         pluginKey,
-		Path:         selected.path,
-		Scope:        "user",
-		ProjectName:  "",
-		ProjectPath:  "",
-		ManagedByHub: false,
-		Warnings:     warnings,
+		LocalAssetID:       "plugin:" + pluginSlug,
+		Type:               AssetTypePlugin,
+		Slug:               pluginSlug,
+		Name:               pluginKey,
+		Path:               selected.path,
+		Scope:              "user",
+		ProjectName:        "",
+		ProjectPath:        "",
+		ManagedByHub:       false,
+		Warnings:           warnings,
+		ContentFingerprint: fingerprint,
 	}, true
 }
 
@@ -1517,16 +1559,17 @@ func (m *Manager) settingsConfigAssets(path string, scope string, projectName st
 			continue
 		}
 		assets = append(assets, LocalAsset{
-			LocalAssetID: localIDPrefix + ":" + section,
-			Type:         AssetTypeConfig,
-			Slug:         section,
-			Name:         "Nastavení: " + section,
-			Path:         path + " :: " + section,
-			Scope:        scope,
-			ProjectName:  projectName,
-			ProjectPath:  projectPath,
-			ManagedByHub: false,
-			Warnings:     textWarnings(string(value)),
+			LocalAssetID:       localIDPrefix + ":" + section,
+			Type:               AssetTypeConfig,
+			Slug:               section,
+			Name:               "Nastavení: " + section,
+			Path:               path + " :: " + section,
+			Scope:              scope,
+			ProjectName:        projectName,
+			ProjectPath:        projectPath,
+			ManagedByHub:       false,
+			Warnings:           textWarnings(string(value)),
+			ContentFingerprint: shaText(string(value)),
 		})
 	}
 	return assets
@@ -1583,16 +1626,17 @@ func (m *Manager) mcpServerAssets(path string, scope string, projectName string,
 			continue
 		}
 		assets = append(assets, LocalAsset{
-			LocalAssetID: localIDPrefix + ":" + slug,
-			Type:         AssetTypeMCP,
-			Slug:         slug,
-			Name:         "MCP: " + key,
-			Path:         path + " :: mcpServers." + key,
-			Scope:        scope,
-			ProjectName:  projectName,
-			ProjectPath:  projectPath,
-			ManagedByHub: false,
-			Warnings:     textWarnings(string(value)),
+			LocalAssetID:       localIDPrefix + ":" + slug,
+			Type:               AssetTypeMCP,
+			Slug:               slug,
+			Name:               "MCP: " + key,
+			Path:               path + " :: mcpServers." + key,
+			Scope:              scope,
+			ProjectName:        projectName,
+			ProjectPath:        projectPath,
+			ManagedByHub:       false,
+			Warnings:           textWarnings(string(value)),
+			ContentFingerprint: shaText(string(value)),
 		})
 	}
 	return assets
@@ -1627,16 +1671,17 @@ func (m *Manager) settingsHookAsset(path string, localID string, name string, sc
 	}
 
 	return []LocalAsset{{
-		LocalAssetID: localID,
-		Type:         AssetTypeHook,
-		Slug:         Slugify(name),
-		Name:         name,
-		Path:         path,
-		Scope:        scope,
-		ProjectName:  projectName,
-		ProjectPath:  projectPath,
-		ManagedByHub: false,
-		Warnings:     textWarnings(string(hooks)),
+		LocalAssetID:       localID,
+		Type:               AssetTypeHook,
+		Slug:               Slugify(name),
+		Name:               name,
+		Path:               path,
+		Scope:              scope,
+		ProjectName:        projectName,
+		ProjectPath:        projectPath,
+		ManagedByHub:       false,
+		Warnings:           textWarnings(string(hooks)),
+		ContentFingerprint: shaText(string(hooks)),
 	}}
 }
 

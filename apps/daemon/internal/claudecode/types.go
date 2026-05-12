@@ -69,16 +69,17 @@ type InstallPreview struct {
 }
 
 type LocalAsset struct {
-	LocalAssetID string    `json:"localAssetId"`
-	Type         AssetType `json:"type"`
-	Slug         string    `json:"slug"`
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Scope        string    `json:"scope"`
-	ProjectName  string    `json:"projectName,omitempty"`
-	ProjectPath  string    `json:"projectPath,omitempty"`
-	ManagedByHub bool      `json:"managedByHub"`
-	Warnings     []string  `json:"warnings"`
+	LocalAssetID       string    `json:"localAssetId"`
+	Type               AssetType `json:"type"`
+	Slug               string    `json:"slug"`
+	Name               string    `json:"name"`
+	Path               string    `json:"path"`
+	Scope              string    `json:"scope"`
+	ProjectName        string    `json:"projectName,omitempty"`
+	ProjectPath        string    `json:"projectPath,omitempty"`
+	ManagedByHub       bool      `json:"managedByHub"`
+	Warnings           []string  `json:"warnings"`
+	ContentFingerprint string    `json:"contentFingerprint,omitempty"`
 }
 
 type LocalAssetExport struct {
