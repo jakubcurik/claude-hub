@@ -1,0 +1,14 @@
+.docker/
+.git/
+.next/
+apps/*/.next/
+apps/*/dist/
+coverage/
+logs/
+node_modules/
+**/node_modules/
+npm-debug.log*
+Dockerfile
+*.log
+.env
+.env.*

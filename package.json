@@ -1,0 +1,27 @@
+{
+  "name": "claude-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Team catalog for sharing Claude Code assets with local install state and explicit user control.",
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/schema"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @claude-hub/web run dev",
+    "dev:api": "npm --workspace @claude-hub/api run dev",
+    "dev:daemon": "go run ./apps/daemon/cmd/claude-hub-daemon",
+    "build": "npm --workspaces --if-present run build",
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "test": "npm --workspaces --if-present test && go test ./apps/daemon/...",
+    "test:daemon": "go test ./apps/daemon/...",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  }
+}
