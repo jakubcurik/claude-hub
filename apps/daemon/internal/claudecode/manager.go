@@ -78,10 +78,6 @@ type installedPluginEntry struct {
 	Version     string `json:"version"`
 }
 
-type mcpConfigFile struct {
-	MCPServers map[string]json.RawMessage `json:"mcpServers"`
-}
-
 func NewManager(claudeHome string) *Manager {
 	return &Manager{
 		ClaudeHome: claudeHome,
@@ -979,7 +975,7 @@ func (m *Manager) LocalAssets() ([]LocalAsset, error) {
 	assets = append(assets, m.entryAssets(filepath.Join(m.ClaudeHome, "hooks"), AssetTypeHook, "Hook", "user", "", "")...)
 	assets = append(assets, m.settingsHookAsset(filepath.Join(m.ClaudeHome, "settings.json"), "hook:user-settings", "Nastavení uživatelských hooků", "user", "", "")...)
 	assets = append(assets, m.pluginAssets()...)
-	assets = append(assets, m.mcpAsset(filepath.Join(m.ClaudeHome, ".mcp.json"), "mcp:user", "Uživatelská MCP konfigurace", "user", "", "")...)
+	assets = append(assets, m.userMcpAssets()...)
 
 	workspaceAssets, err := m.workspaceAssets()
 	if err != nil {
@@ -1312,34 +1308,93 @@ func sortedKeysText(values map[string]bool) string {
 	return strings.Join(keys, ", ")
 }
 
-func (m *Manager) mcpAsset(path string, localID string, name string, scope string, projectName string, projectPath string) []LocalAsset {
-	content, err := os.ReadFile(path)
-	if err != nil {
+// splitMcpServerPath rozdělí cestu typu "<file> :: mcpServers.<key>" na
+// (soubor, klíč serveru). Vrátí (path, "", false) pokud řetězec není v očekávaném formátu.
+func splitMcpServerPath(path string) (string, string, bool) {
+	const sep = " :: mcpServers."
+	idx := strings.Index(path, sep)
+	if idx < 0 {
+		return path, "", false
+	}
+	filePart := strings.TrimSpace(path[:idx])
+	keyPart := strings.TrimSpace(path[idx+len(sep):])
+	if filePart == "" || keyPart == "" {
+		return path, "", false
+	}
+	return filePart, keyPart, true
+}
+
+// userClaudeJsonPath vrací cestu k user-level .claude.json souboru, který
+// Claude Code CLI fakticky používá k uchování per-user MCP konfigurace.
+// Soubor leží vedle adresáře .claude/ (nikoli uvnitř něj).
+func (m *Manager) userClaudeJsonPath() string {
+	return filepath.Join(filepath.Dir(m.ClaudeHome), ".claude.json")
+}
+
+// readMcpServersFile přečte mcpServers sekci z libovolného JSON souboru,
+// který tuto sekci obsahuje (.mcp.json i .claude.json). Vrací nil, pokud
+// soubor neexistuje nebo žádné servery neobsahuje.
+func readMcpServersFile(path string) map[string]json.RawMessage {
+	doc, err := readMCPDoc(path)
+	if err != nil || doc == nil {
+		return nil
+	}
+	if len(doc.MCPServers) == 0 {
+		return nil
+	}
+	return doc.MCPServers
+}
+
+// mcpServerAssets vrátí jeden LocalAsset za každý MCP server v daném souboru.
+// Granularita 1 server = 1 sdílitelná položka.
+func (m *Manager) mcpServerAssets(path string, scope string, projectName string, projectPath string, localIDPrefix string) []LocalAsset {
+	servers := readMcpServersFile(path)
+	if len(servers) == 0 {
 		return nil
 	}
 
-	var config mcpConfigFile
-	if err := json.Unmarshal(content, &config); err != nil || len(config.MCPServers) == 0 {
-		return nil
+	assets := make([]LocalAsset, 0, len(servers))
+	for key, value := range servers {
+		slug := Slugify(key)
+		if slug == "" {
+			continue
+		}
+		assets = append(assets, LocalAsset{
+			LocalAssetID: localIDPrefix + ":" + slug,
+			Type:         AssetTypeMCP,
+			Slug:         slug,
+			Name:         "MCP: " + key,
+			Path:         path + " :: mcpServers." + key,
+			Scope:        scope,
+			ProjectName:  projectName,
+			ProjectPath:  projectPath,
+			ManagedByHub: false,
+			Warnings:     textWarnings(string(value)),
+		})
 	}
+	return assets
+}
 
-	slug := Slugify(name)
-	if slug == "" {
-		slug = "mcp"
+// userMcpAssets sloučí servery z ~/.claude.json (primary) a ~/.claude/.mcp.json
+// (fallback). Pokud se server vyskytuje v obou, .claude.json má přednost.
+func (m *Manager) userMcpAssets() []LocalAsset {
+	seen := map[string]bool{}
+	assets := make([]LocalAsset, 0)
+	for _, item := range m.mcpServerAssets(m.userClaudeJsonPath(), "user", "", "", "mcp:user") {
+		if seen[item.Slug] {
+			continue
+		}
+		seen[item.Slug] = true
+		assets = append(assets, item)
 	}
-
-	return []LocalAsset{{
-		LocalAssetID: localID,
-		Type:         AssetTypeMCP,
-		Slug:         slug,
-		Name:         name,
-		Path:         path,
-		Scope:        scope,
-		ProjectName:  projectName,
-		ProjectPath:  projectPath,
-		ManagedByHub: false,
-		Warnings:     textWarnings(string(content)),
-	}}
+	for _, item := range m.mcpServerAssets(filepath.Join(m.ClaudeHome, ".mcp.json"), "user", "", "", "mcp:user:legacy") {
+		if seen[item.Slug] {
+			continue
+		}
+		seen[item.Slug] = true
+		assets = append(assets, item)
+	}
+	return assets
 }
 
 func (m *Manager) settingsHookAsset(path string, localID string, name string, scope string, projectName string, projectPath string) []LocalAsset {
@@ -1402,8 +1457,8 @@ func (m *Manager) workspaceClaudeDirAssets(claudeDir string, projectRoot string,
 	assets = append(assets, m.entryAssets(filepath.Join(claudeDir, "hooks"), AssetTypeHook, "Hook", "project", projectName, projectRoot)...)
 	assets = append(assets, m.settingsHookAsset(filepath.Join(claudeDir, "settings.json"), "project:"+projectSlug+":hook:settings", projectName+" - nastavení hooků", "project", projectName, projectRoot)...)
 	assets = append(assets, m.entryAssets(filepath.Join(claudeDir, "plugins"), AssetTypePlugin, "Plugin", "project", projectName, projectRoot)...)
-	assets = append(assets, m.mcpAsset(filepath.Join(claudeDir, ".mcp.json"), "project:"+projectSlug+":mcp:claude", projectName+" - MCP konfigurace", "project", projectName, projectRoot)...)
-	assets = append(assets, m.mcpAsset(filepath.Join(projectRoot, ".mcp.json"), "project:"+projectSlug+":mcp:root", projectName+" - kořenová MCP konfigurace", "project", projectName, projectRoot)...)
+	assets = append(assets, m.mcpServerAssets(filepath.Join(claudeDir, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp")...)
+	assets = append(assets, m.mcpServerAssets(filepath.Join(projectRoot, ".mcp.json"), "project", projectName, projectRoot, "project:"+projectSlug+":mcp-root")...)
 	return assets
 }
 
@@ -1430,6 +1485,28 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	}
 	if asset.Type == AssetTypeHook && strings.EqualFold(filepath.Base(source), "settings.json") {
 		return settingsSectionExport(source, "hooks", "settings.hooks.json")
+	}
+	if asset.Type == AssetTypeMCP {
+		filePath, serverKey, ok := splitMcpServerPath(source)
+		if !ok {
+			return nil, errors.New("MCP položka nemá platnou cestu k serveru")
+		}
+		servers := readMcpServersFile(filePath)
+		raw, exists := servers[serverKey]
+		if !exists {
+			return nil, fmt.Errorf("MCP server %q už v souboru %s není", serverKey, filePath)
+		}
+		payload := map[string]map[string]json.RawMessage{
+			"mcpServers": {serverKey: raw},
+		}
+		content, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return []AssetFile{{
+			Path:    "mcp.json",
+			Content: string(content),
+		}}, nil
 	}
 
 	info, err := os.Stat(source)
@@ -1652,7 +1729,13 @@ func (m *Manager) paths(asset CatalogAsset) assetPaths {
 			Manifest:     manifestPath,
 		}
 	case AssetTypeMCP:
-		target := filepath.Join(m.ClaudeHome, ".mcp.json")
+		// Primární cíl je user-level ~/.claude.json (kam CLI ukládá MCP servery).
+		// Pokud uživatel nemá ~/.claude.json (čerstvá instalace nebo jen .mcp.json),
+		// zapisujeme do legacy ~/.claude/.mcp.json.
+		target := m.userClaudeJsonPath()
+		if !exists(target) {
+			target = filepath.Join(m.ClaudeHome, ".mcp.json")
+		}
 		return assetPaths{
 			TargetRoot:   target,
 			TargetFile:   target,

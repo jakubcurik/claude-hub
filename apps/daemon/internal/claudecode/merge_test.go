@@ -180,6 +180,144 @@ func TestInstallHookAppendsAndRemovesEntries(t *testing.T) {
 	}
 }
 
+func TestUserMcpAssetsDetectsServersFromClaudeJson(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	home := t.TempDir()
+	claudeHome := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeHome, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	claudeJson := filepath.Join(home, ".claude.json")
+	content := `{
+  "userID": "abc",
+  "mcpServers": {
+    "notion": {"command": "npx", "args": ["notion"]},
+    "codegraph": {"command": "npx", "args": ["cg"]}
+  },
+  "projects": {}
+}`
+	if err := os.WriteFile(claudeJson, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	manager := NewManager(claudeHome)
+	if err := manager.EnsureBaseDirs(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	assets, err := manager.LocalAssets()
+	if err != nil {
+		t.Fatalf("local assets: %v", err)
+	}
+
+	mcps := map[string]LocalAsset{}
+	for _, a := range assets {
+		if a.Type == AssetTypeMCP {
+			mcps[a.Slug] = a
+		}
+	}
+
+	if len(mcps) != 2 {
+		t.Fatalf("expected 2 MCP assets, got %d (%v)", len(mcps), mcps)
+	}
+	if mcps["notion"].Name != "MCP: notion" {
+		t.Fatalf("unexpected notion name: %q", mcps["notion"].Name)
+	}
+	if _, ok := mcps["codegraph"]; !ok {
+		t.Fatalf("codegraph not detected")
+	}
+}
+
+func TestInstallMCPPreservesOtherClaudeJsonKeys(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	home := t.TempDir()
+	claudeHome := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeHome, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	claudeJson := filepath.Join(home, ".claude.json")
+	existing := `{
+  "userID": "abc-123",
+  "mcpServers": {
+    "old-server": {"command": "echo", "args": ["old"]}
+  },
+  "projects": {"a": {}}
+}`
+	if err := os.WriteFile(claudeJson, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	manager := NewManager(claudeHome)
+	if err := manager.EnsureBaseDirs(); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	asset := CatalogAsset{
+		ID:      "mcp:weather",
+		Type:    AssetTypeMCP,
+		Slug:    "weather",
+		Name:    "Weather",
+		Version: "1.0.0",
+		Risk:    RiskMedium,
+		Files: []AssetFile{{
+			Path:    "mcp.json",
+			Content: `{"mcpServers":{"weather":{"command":"node","args":["weather.js"]}}}`,
+		}},
+	}
+
+	if _, err := manager.Install(asset); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	bytes, _ := os.ReadFile(claudeJson)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(bytes, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if _, ok := doc["userID"]; !ok {
+		t.Fatalf("userID byl ztracen při merge")
+	}
+	if _, ok := doc["projects"]; !ok {
+		t.Fatalf("projects sekce byla ztracena při merge")
+	}
+
+	servers := map[string]json.RawMessage{}
+	_ = json.Unmarshal(doc["mcpServers"], &servers)
+	if _, ok := servers["old-server"]; !ok {
+		t.Fatalf("old-server byl ztracen")
+	}
+	if _, ok := servers["weather"]; !ok {
+		t.Fatalf("nový server weather se nepřidal")
+	}
+}
+
+func TestSplitMcpServerPath(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantFile   string
+		wantKey    string
+		wantSplit  bool
+	}{
+		{"/home/user/.claude.json :: mcpServers.notion", "/home/user/.claude.json", "notion", true},
+		{"/home/user/.claude.json", "/home/user/.claude.json", "", false},
+		{" :: mcpServers.notion", "", "", false},
+	}
+	for _, c := range cases {
+		f, k, ok := splitMcpServerPath(c.in)
+		if ok != c.wantSplit || (ok && (f != c.wantFile || k != c.wantKey)) {
+			t.Errorf("splitMcpServerPath(%q) = (%q, %q, %v), chtěli jsme (%q, %q, %v)",
+				c.in, f, k, ok, c.wantFile, c.wantKey, c.wantSplit)
+		}
+	}
+}
+
 func TestInstallPluginWritesFilesAndUpdatesManifest(t *testing.T) {
 	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
 	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")

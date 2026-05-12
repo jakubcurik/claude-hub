@@ -62,6 +62,9 @@ services:
       # Na Windows použijte ${USERPROFILE}, na Linux/macOS ${HOME}.
       # Docker Compose dosadí prázdný řetězec, pokud proměnná neexistuje, proto fallback.
       - ${CLAUDE_HUB_CLAUDE_HOME:-${USERPROFILE:-${HOME}}/.claude}:/data/claude
+      # ~/.claude.json drží user-level MCP konfiguraci (kterou CLI ukládá vedle .claude/).
+      # Mount souboru zpřístupní daemonu detekci i instalaci MCP serverů.
+      - ${CLAUDE_HUB_CLAUDE_JSON:-${USERPROFILE:-${HOME}}/.claude.json}:/data/.claude.json
       - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude:ro
 
   web:
