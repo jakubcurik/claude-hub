@@ -236,3 +236,154 @@ export interface DaemonHello {
   capabilities: string[];
   knownProjects?: KnownProject[];
 }
+
+// ────────────────────── Telemetry ──────────────────────
+
+export interface TelemetryBufferMetric {
+  name: string;
+  value: number;
+  timestampMs: number;
+  attributes: Record<string, string>;
+  resource: Record<string, string>;
+}
+
+export interface TelemetryBufferEvent {
+  name: string;
+  timestampMs: number;
+  attributes: Record<string, string>;
+  resource: Record<string, string>;
+}
+
+export type TelemetryBufferItem =
+  | { kind: "metric"; metric: TelemetryBufferMetric }
+  | { kind: "event"; event: TelemetryBufferEvent };
+
+export interface TelemetryIngestRequest {
+  items: TelemetryBufferItem[];
+}
+
+export interface TelemetryIngestResponse {
+  accepted: number;
+  dropped: number;
+}
+
+export interface TelemetryDaemonStatus {
+  enabled: boolean;
+  queueDepth: number;
+  lastFlushAt?: string;
+  lastError?: string;
+}
+
+export interface TelemetryDailyRow {
+  day: string;
+  userId: string;
+  userEmail: string;
+  projectPath: string;
+  sessions: number;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensCacheRead: number;
+  tokensCacheCreate: number;
+  costUsd: number;
+  activeSeconds: number;
+}
+
+export interface TelemetryTotals {
+  sessions: number;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensCacheRead: number;
+  tokensCacheCreate: number;
+  costUsd: number;
+  activeSeconds: number;
+  cacheHitRatio: number;
+}
+
+export interface TelemetryFilters {
+  from: string;
+  to: string;
+  projectPath?: string;
+  userId?: string;
+}
+
+export interface TelemetryUserAggregate {
+  userId: string;
+  userEmail: string;
+  sessions: number;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensCacheRead: number;
+  tokensCacheCreate: number;
+  costUsd: number;
+  activeSeconds: number;
+  lastSeenAt?: string;
+}
+
+export interface TelemetryProjectAggregate {
+  projectPath: string;
+  tokens: number;
+  costUsd: number;
+  sessions: number;
+}
+
+export interface TelemetryModelMixRow {
+  userId: string;
+  model: string;
+  tokens: number;
+}
+
+export interface TelemetryBreakdownItem {
+  key: string;
+  value: number;
+}
+
+export interface TelemetryDailyTeamPoint {
+  day: string;
+  sessions: number;
+  tokensTotal: number;
+  costUsd: number;
+}
+
+export interface TelemetryCostPerDevPoint {
+  day: string;
+  cost: number;
+  activeDevs: number;
+}
+
+export interface TelemetryOverview {
+  filters: TelemetryFilters;
+  totals: TelemetryTotals;
+  dailyTeam: TelemetryDailyTeamPoint[];
+  perUser: TelemetryUserAggregate[];
+  perProject: TelemetryProjectAggregate[];
+  modelMix: TelemetryModelMixRow[];
+  topSkills: TelemetryBreakdownItem[];
+  topPlugins: TelemetryBreakdownItem[];
+  costPerDevPerDay: TelemetryCostPerDevPoint[];
+}
+
+export interface TelemetryComparison {
+  periodA: TelemetryOverview;
+  periodB: TelemetryOverview;
+  delta: {
+    sessionsPct: number;
+    tokensPct: number;
+    costUsdPct: number;
+    activeSecondsPct: number;
+  };
+}
+
+export interface TelemetryProjectsListItem {
+  projectPath: string;
+  lastSeenAt: string;
+  uniqueUsers: number;
+}
+
+export interface TelemetryUserSettingRow {
+  userId: string;
+  userEmail: string;
+  optedIn: boolean;
+  disabledByOwner: boolean;
+  optedInAt: string;
+  disabledAt?: string;
+}
