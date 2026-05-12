@@ -52,6 +52,11 @@ export function ModelMixChart({ data, userEmailById }: ModelMixChartProps) {
     });
 
   const chartHeight = Math.max(160, series.length * 38 + 60);
+  const longestLabel = series.reduce(
+    (acc, row) => Math.max(acc, String(row.label ?? "").length),
+    0
+  );
+  const yAxisWidth = Math.min(200, Math.max(70, longestLabel * 7 + 12));
 
   return (
     <div className="analytics-chart-frame">
@@ -59,7 +64,7 @@ export function ModelMixChart({ data, userEmailById }: ModelMixChartProps) {
         <BarChart
           data={series}
           layout="vertical"
-          margin={{ top: 4, right: 24, left: 8, bottom: 0 }}
+          margin={{ top: 4, right: 24, left: 0, bottom: 0 }}
           barCategoryGap="30%"
         >
           <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" horizontal={false} />
@@ -75,7 +80,7 @@ export function ModelMixChart({ data, userEmailById }: ModelMixChartProps) {
             dataKey="label"
             stroke="var(--muted)"
             tick={{ fill: "var(--ink-muted)", fontSize: 11 }}
-            width={170}
+            width={yAxisWidth}
           />
           <Tooltip
             cursor={{ fill: "rgba(255,255,255,0.04)" }}

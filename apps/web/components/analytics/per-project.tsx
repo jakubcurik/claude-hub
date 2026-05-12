@@ -29,6 +29,8 @@ export function PerProjectChart({ data, onSelect }: PerProjectChartProps) {
     cost: Number(row.costUsd.toFixed(2))
   }));
   const chartHeight = Math.max(180, series.length * 36 + 40);
+  const longestLabel = series.reduce((acc, row) => Math.max(acc, row.label.length), 0);
+  const yAxisWidth = Math.min(180, Math.max(70, longestLabel * 7 + 12));
 
   return (
     <div className="analytics-chart-frame">
@@ -36,7 +38,7 @@ export function PerProjectChart({ data, onSelect }: PerProjectChartProps) {
         <BarChart
           data={series}
           layout="vertical"
-          margin={{ top: 4, right: 56, left: 8, bottom: 0 }}
+          margin={{ top: 4, right: 56, left: 0, bottom: 0 }}
           barCategoryGap="30%"
         >
           <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" horizontal={false} />
@@ -51,7 +53,7 @@ export function PerProjectChart({ data, onSelect }: PerProjectChartProps) {
             dataKey="label"
             stroke="var(--muted)"
             tick={{ fill: "var(--ink-muted)", fontSize: 11 }}
-            width={170}
+            width={yAxisWidth}
           />
           <Tooltip
             cursor={{ fill: "rgba(255,255,255,0.04)" }}
