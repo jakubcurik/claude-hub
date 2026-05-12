@@ -49,6 +49,96 @@ export interface CatalogAsset {
   permissions: AssetPermission[];
   requiredEnv: string[];
   files: AssetFile[];
+  contentHash?: string;
+}
+
+export interface PairedDevice {
+  tokenHash: string;
+  label: string;
+  claudeHome: string;
+  lastSeenAt: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  slug: string;
+  isPersonal: boolean;
+  createdAt: string;
+  createdBy: string;
+}
+
+export type TeamRole = "owner" | "admin" | "member";
+
+export interface TeamMembership {
+  teamId: string;
+  userId: string;
+  email: string;
+  name: string;
+  role: TeamRole;
+  joinedAt: string;
+}
+
+export interface Collection {
+  id: string;
+  teamId: string;
+  slug: string;
+  name: string;
+  description: string;
+  assetIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface SigningKey {
+  id: string;
+  userId: string;
+  label: string;
+  publicKey: string;
+  createdAt: string;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+}
+
+export interface AssetSignaturePayload {
+  signature: string;
+  publicKey: string;
+}
+
+export interface AssetDiffLine {
+  type: "context" | "add" | "remove";
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+}
+
+export interface AssetFileDiff {
+  path: string;
+  status: "added" | "removed" | "modified" | "unchanged";
+  lines: AssetDiffLine[];
+}
+
+export interface AssetDiff {
+  assetId: string;
+  files: AssetFileDiff[];
+}
+
+export interface CatalogAssetVersionRecord {
+  version: string;
+  publishedAt: string;
+  publishedBy: string;
+  asset: CatalogAsset;
+}
+
+export interface CatalogEventRecord {
+  occurredAt: string;
+  teamId: string;
+  userId: string;
+  event: string;
+  assetId?: string;
+  assetVersion?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface LocalAssetState {
