@@ -19,24 +19,47 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AssetDiff,
   AssetType,
   CatalogAsset,
+  Collection,
   InstallOperation,
   InstallPreview,
   LocalAsset,
   LocalAssetState,
-  RiskLevel
+  SigningKey,
+  TeamMembership
 } from "@claude-hub/schema";
-import { logoutAction, publishLocalAssetToCatalog, registerPairedDevice } from "@/app/actions";
+import {
+  deleteCollection,
+  generateAndRegisterSigningKey,
+  listPairedDevices,
+  listTeamMembers,
+  logCatalogEvent,
+  logoutAction,
+  publishLocalAssetToCatalog,
+  registerPairedDevice,
+  removeTeamMember,
+  revokePairedDevice,
+  revokeSigningKey,
+  rollbackAssetVersion,
+  saveCollection,
+  updateMemberRole
+} from "@/app/actions";
 import { DaemonClient } from "@/lib/daemon-client";
 
-type View = "catalog" | "local";
+type View = "catalog" | "local" | "collections" | "team" | "keys";
 type Filter = "all" | AssetType;
 
 interface CatalogExperienceProps {
+  collections: Collection[];
   daemonInstall: DaemonInstallConfig;
   initialAssets: CatalogAsset[];
+  members: TeamMembership[];
+  membership: TeamMembership;
+  signingKeys: SigningKey[];
   userEmail: string;
+  userId: string;
 }
 
 interface DaemonInstallConfig {
@@ -60,7 +83,10 @@ const daemonOrigin = "http://127.0.0.1:17373";
 
 const navItems: Array<{ id: View; label: string }> = [
   { id: "catalog", label: "Katalog" },
-  { id: "local", label: "Tento počítač" }
+  { id: "local", label: "Tento počítač" },
+  { id: "collections", label: "Sady" },
+  { id: "team", label: "Tým" },
+  { id: "keys", label: "Klíče" }
 ];
 
 const filters: Array<{ id: Filter; label: string }> = [
@@ -82,13 +108,6 @@ const typeLabels: Record<AssetType, string> = {
   config: "Nastavení"
 };
 
-const riskLabels: Record<RiskLevel, string> = {
-  low: "nízké",
-  medium: "střední",
-  high: "vysoké",
-  restricted: "omezené"
-};
-
 const operationLabels: Record<InstallOperation["type"], string> = {
   create: "Vytvořit",
   replace: "Nahradit",
@@ -97,14 +116,6 @@ const operationLabels: Record<InstallOperation["type"], string> = {
   enable: "Zapnout",
   disable: "Vypnout"
 };
-
-function readInitialToken() {
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  return window.localStorage.getItem(tokenStorageKey) ?? "";
-}
 
 function formatState(state?: LocalAssetState, connected = false, assetType?: CatalogAsset["type"]) {
   if (assetType && !["skill", "command"].includes(assetType)) {
@@ -132,13 +143,34 @@ function formatState(state?: LocalAssetState, connected = false, assetType?: Cat
     : { label: "Vypnuto", tone: "disabled" };
 }
 
-export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: CatalogExperienceProps) {
+export function CatalogExperience({
+  collections: initialCollections,
+  daemonInstall,
+  initialAssets,
+  members: initialMembers,
+  membership,
+  signingKeys: initialSigningKeys,
+  userEmail,
+  userId
+}: CatalogExperienceProps) {
+  const [collections, setCollections] = useState(initialCollections);
+  const [members, setMembers] = useState(initialMembers);
+  const [signingKeys, setSigningKeys] = useState(initialSigningKeys);
+  const [diffModal, setDiffModal] = useState<{ asset: CatalogAsset; diff: AssetDiff } | null>(null);
+  const [versionsModal, setVersionsModal] = useState<{
+    asset: CatalogAsset;
+    versions: Array<{ version: string; publishedAt: string; publishedBy: string; signature?: string }>;
+  } | null>(null);
+  const [generatedKey, setGeneratedKey] = useState<{ label: string; privateKeyPem: string; fingerprint: string } | null>(
+    null
+  );
+  const isAdmin = membership.role === "owner" || membership.role === "admin";
   const [activeView, setActiveView] = useState<View>("catalog");
   const [catalogFilter, setCatalogFilter] = useState<Filter>("all");
   const [localFilter, setLocalFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
-  const [token, setToken] = useState(readInitialToken);
-  const [savedToken, setSavedToken] = useState(readInitialToken);
+  const [token, setToken] = useState("");
+  const [savedToken, setSavedToken] = useState("");
   const [daemonSummary, setDaemonSummary] = useState("Lokální služba zatím nebyla zkontrolována.");
   const [isConnected, setIsConnected] = useState(false);
   const [states, setStates] = useState<Record<string, LocalAssetState>>({});
@@ -147,7 +179,19 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [manualPairingOpen, setManualPairingOpen] = useState(false);
+  const [pairedDevices, setPairedDevices] = useState<
+    Array<{ tokenHash: string; label: string; claudeHome: string; lastSeenAt: string }>
+  >([]);
+  const [devicesOpen, setDevicesOpen] = useState(false);
   const lastAutoRefreshKey = useRef("");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(tokenStorageKey) ?? "";
+    if (stored) {
+      setToken(stored);
+      setSavedToken(stored);
+    }
+  }, []);
 
   const normalizedToken = savedToken.trim();
   const client = useMemo(() => new DaemonClient(normalizedToken), [normalizedToken]);
@@ -205,6 +249,25 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
     lastAutoRefreshKey.current = autoRefreshKey;
     void refresh();
   }, [catalogRefreshKey, normalizedToken, refresh]);
+
+  const refreshDevices = useCallback(async () => {
+    try {
+      const devices = await listPairedDevices();
+      setPairedDevices(devices);
+    } catch {
+      // ignore — UI prostě ukáže prázdný seznam
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices, isConnected]);
+
+  async function handleRevokeDevice(tokenHash: string) {
+    await revokePairedDevice(tokenHash);
+    await refreshDevices();
+    showToast("Spárování zařízení bylo zrušeno.");
+  }
 
   const visibleAssets = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -272,6 +335,11 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
         setModal(null);
         await refresh();
         showToast(`Nainstalováno: ${asset.name}.`);
+        void logCatalogEvent({
+          event: states[asset.id]?.installed ? "update" : "install",
+          assetId: asset.id,
+          assetVersion: asset.version
+        });
       }
     });
   }
@@ -280,6 +348,90 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
     await client.setEnabled(asset, enabled);
     await refresh();
     showToast(`${enabled ? "Zapnuto" : "Vypnuto"}: ${asset.name}.`);
+    void logCatalogEvent({
+      event: enabled ? "enable" : "disable",
+      assetId: asset.id,
+      assetVersion: asset.version
+    });
+  }
+
+  async function requestDiff(asset: CatalogAsset) {
+    try {
+      const diff = await client.diff(asset);
+      setDiffModal({ asset, diff });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Diff se nepodařilo načíst.");
+    }
+  }
+
+  async function requestRollback(asset: CatalogAsset, version: string) {
+    if (!window.confirm(`Vrátit ${asset.name} na verzi ${version}?`)) {
+      return;
+    }
+    try {
+      await rollbackAssetVersion(asset.type, asset.slug, version);
+      showToast(`Katalog vrácen na verzi ${version}.`);
+      window.location.reload();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Rollback selhal.");
+    }
+  }
+
+  async function openVersionsModal(asset: CatalogAsset) {
+    try {
+      const { listAssetVersions } = await import("@/app/actions");
+      const versions = await listAssetVersions(asset.type, asset.slug);
+      setVersionsModal({ asset, versions });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Verze se nepodařilo načíst.");
+    }
+  }
+
+  async function refreshTeamData() {
+    const nextMembers = await listTeamMembers();
+    setMembers(nextMembers);
+  }
+
+  useEffect(() => {
+    if (activeView === "team" && isAdmin) {
+      void refreshTeamData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
+  async function requestUninstall(asset: CatalogAsset) {
+    setModal({
+      title: `Odinstalovat ${asset.name}`,
+      intro: "Soubory se před smazáním zálohují do .claude-hub/backups/. Akci lze ručně vrátit z této zálohy.",
+      confirmLabel: "Odinstalovat",
+      operations: [
+        {
+          type: "backup",
+          path: asset.name,
+          description: "Zálohovat aktuální lokální položku.",
+          risk: "low"
+        },
+        {
+          type: "disable",
+          path: asset.name,
+          description: "Smazat zapnuté i vypnuté soubory a manifest.",
+          risk: asset.risk
+        }
+      ],
+      warnings: [],
+      requiredEnv: [],
+      onConfirm: async () => {
+        await client.uninstall(asset);
+        setModal(null);
+        await refresh();
+        showToast(`Odinstalováno: ${asset.name}.`);
+        void logCatalogEvent({
+          event: "uninstall",
+          assetId: asset.id,
+          assetVersion: asset.version
+        });
+      }
+    });
   }
 
   async function requestCatalogUpload(asset: LocalAsset) {
@@ -338,6 +490,7 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
           </button>
         </form>
 
+
         <nav className="nav-list" aria-label="Hlavní navigace">
           {navItems.map((item) => (
             <button
@@ -371,6 +524,35 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
               Odpojit
             </button>
           </div>
+          <details
+            className="paired-devices"
+            open={devicesOpen}
+            onToggle={(event) => setDevicesOpen(event.currentTarget.open)}
+          >
+            <summary>Spárovaná zařízení ({pairedDevices.length})</summary>
+            {pairedDevices.length === 0 ? (
+              <p className="muted">Zatím nejsou evidovaná žádná zařízení.</p>
+            ) : (
+              <ul className="device-list">
+                {pairedDevices.map((device) => (
+                  <li key={device.tokenHash}>
+                    <div>
+                      <strong>{device.label}</strong>
+                      <span>{device.claudeHome}</span>
+                      <span className="muted">Naposledy viděno {formatRelativeTime(device.lastSeenAt)}</span>
+                    </div>
+                    <button
+                      className="secondary dark"
+                      onClick={() => handleRevokeDevice(device.tokenHash)}
+                      type="button"
+                    >
+                      Zrušit
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </details>
           <details className="manual-pairing" open={manualPairingOpen} onToggle={(event) => setManualPairingOpen(event.currentTarget.open)}>
             <summary>Zadat token ručně</summary>
             <label htmlFor="pairing-token">Párovací token</label>
@@ -442,16 +624,22 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
               />
             </div>
 
-            <div className="catalog-grid">
+            <div className={`catalog-grid${busy ? " busy" : ""}`} aria-busy={busy}>
+              {busy && visibleAssets.length === 0
+                ? Array.from({ length: 4 }).map((_, index) => <AssetCardSkeleton key={index} />)
+                : null}
               {visibleAssets.length > 0 ? (
                 visibleAssets.map((asset) => (
                   <AssetCard
                     asset={asset}
                     connected={isConnected}
                     key={asset.id}
+                    onDiff={() => requestDiff(asset)}
                     onDisable={() => setEnabled(asset, false)}
                     onEnable={() => setEnabled(asset, true)}
                     onInstall={() => requestInstall(asset)}
+                    onShowVersions={() => openVersionsModal(asset)}
+                    onUninstall={() => requestUninstall(asset)}
                     state={states[asset.id]}
                   />
                 ))
@@ -513,6 +701,92 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
             />
           </section>
         ) : null}
+
+        {activeView === "collections" ? (
+          <CollectionsPanel
+            assets={initialAssets}
+            collections={collections}
+            isAdmin={isAdmin}
+            onDelete={async (slug) => {
+              try {
+                await deleteCollection(slug);
+                setCollections((current) => current.filter((c) => c.slug !== slug));
+                showToast("Sada smazána.");
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Mazání selhalo.");
+              }
+            }}
+            onSave={async (input) => {
+              try {
+                const saved = await saveCollection(input);
+                setCollections((current) => {
+                  const others = current.filter((c) => c.slug !== saved.slug);
+                  return [saved, ...others];
+                });
+                showToast(`Sada „${saved.name}" uložena.`);
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Uložení selhalo.");
+              }
+            }}
+          />
+        ) : null}
+
+        {activeView === "team" ? (
+          <TeamPanel
+            isAdmin={isAdmin}
+            members={members}
+            onRefresh={refreshTeamData}
+            onRemoveMember={async (memberUserId) => {
+              try {
+                await removeTeamMember(memberUserId);
+                await refreshTeamData();
+                showToast("Člen byl odebrán.");
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Odebrání selhalo.");
+              }
+            }}
+            onSetRole={async (memberUserId, role) => {
+              try {
+                await updateMemberRole(memberUserId, role);
+                await refreshTeamData();
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Změna role selhala.");
+              }
+            }}
+            currentUserId={userId}
+          />
+        ) : null}
+
+        {activeView === "keys" ? (
+          <SigningKeysPanel
+            keys={signingKeys}
+            onGenerate={async () => {
+              const label = window.prompt("Pojmenujte klíč (např. Notebook)");
+              if (!label) return;
+              try {
+                const result = await generateAndRegisterSigningKey(label);
+                setSigningKeys((current) => [result.key, ...current]);
+                setGeneratedKey({
+                  label,
+                  privateKeyPem: result.privateKeyPem,
+                  fingerprint: result.fingerprint
+                });
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Klíč se nepodařilo vygenerovat.");
+              }
+            }}
+            onRevoke={async (keyId) => {
+              if (!window.confirm("Opravdu revoknout tento klíč? Předchozí podpisy zůstávají platné.")) return;
+              try {
+                await revokeSigningKey(keyId);
+                setSigningKeys((current) => current.filter((key) => key.id !== keyId));
+                showToast("Klíč byl revoknutý.");
+              } catch (error) {
+                showToast(error instanceof Error ? error.message : "Revokace selhala.");
+              }
+            }}
+          />
+        ) : null}
       </main>
 
       {modal ? (
@@ -530,6 +804,31 @@ export function CatalogExperience({ daemonInstall, initialAssets, userEmail }: C
               setBusy(false);
             }
           }}
+        />
+      ) : null}
+
+      {diffModal ? (
+        <DiffModal
+          asset={diffModal.asset}
+          diff={diffModal.diff}
+          onClose={() => setDiffModal(null)}
+        />
+      ) : null}
+
+      {versionsModal ? (
+        <VersionsModal
+          asset={versionsModal.asset}
+          isAdmin={isAdmin}
+          versions={versionsModal.versions}
+          onClose={() => setVersionsModal(null)}
+          onRollback={(version) => requestRollback(versionsModal.asset, version)}
+        />
+      ) : null}
+
+      {generatedKey ? (
+        <KeyRevealModal
+          generatedKey={generatedKey}
+          onClose={() => setGeneratedKey(null)}
         />
       ) : null}
 
@@ -755,20 +1054,27 @@ function detectInstallPlatform(): InstallPlatform {
 function AssetCard({
   asset,
   connected,
+  onDiff,
   onDisable,
   onEnable,
   onInstall,
+  onShowVersions,
+  onUninstall,
   state
 }: {
   asset: CatalogAsset;
   connected: boolean;
+  onDiff: () => void;
   onDisable: () => void;
   onEnable: () => void;
   onInstall: () => void;
+  onShowVersions: () => void;
+  onUninstall: () => void;
   state?: LocalAssetState;
 }) {
   const status = formatState(state, connected, asset.type);
-  const supported = asset.type === "skill" || asset.type === "command";
+  // Daemon nyní podporuje plný lifecycle pro skill, command, mcp, hook a plugin.
+  const supported = asset.type !== "config";
 
   return (
     <article className="asset-card">
@@ -791,16 +1097,27 @@ function AssetCard({
           <span key={tag}>{tag}</span>
         ))}
       </div>
-      <div className="permission-row">
-        {asset.permissions.slice(0, 2).map((permission) => (
-          <span className={`risk ${permission.level}`} key={permission.label}>
-            {permission.label}
-          </span>
-        ))}
-      </div>
       <div className="card-actions">
-        <span className={`risk ${asset.risk}`}>Riziko: {riskLabels[asset.risk]}</span>
         {renderAssetAction({ connected, onDisable, onEnable, onInstall, state, supported })}
+        {supported && connected && state?.localChanges ? (
+          <button className="secondary" onClick={onDiff} type="button" title="Zobrazit změny">
+            Diff
+          </button>
+        ) : null}
+        <button className="secondary" onClick={onShowVersions} type="button" title="Historie verzí">
+          Verze
+        </button>
+        {supported && connected && state?.installed ? (
+          <button
+            aria-label="Odinstalovat"
+            className="icon-button danger"
+            onClick={onUninstall}
+            title="Odinstalovat"
+            type="button"
+          >
+            <X size={15} />
+          </button>
+        ) : null}
       </div>
     </article>
   );
@@ -865,6 +1182,17 @@ function renderAssetAction({
   );
 }
 
+function AssetCardSkeleton() {
+  return (
+    <article className="asset-card skeleton" aria-hidden="true">
+      <div className="skeleton-line short" />
+      <div className="skeleton-line" />
+      <div className="skeleton-line" />
+      <div className="skeleton-line short" />
+    </article>
+  );
+}
+
 function TypePill({ type }: { type: AssetType }) {
   return (
     <span className="type-pill">
@@ -894,6 +1222,26 @@ async function sha256(value: string) {
   const encoded = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest("SHA-256", encoded);
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function formatRelativeTime(iso: string) {
+  const target = new Date(iso).getTime();
+  if (!Number.isFinite(target)) {
+    return "neznámo";
+  }
+  const diffSeconds = Math.round((target - Date.now()) / 1000);
+  const absSeconds = Math.abs(diffSeconds);
+  const formatter = new Intl.RelativeTimeFormat("cs", { numeric: "auto" });
+  if (absSeconds < 60) {
+    return formatter.format(diffSeconds, "second");
+  }
+  if (absSeconds < 3600) {
+    return formatter.format(Math.round(diffSeconds / 60), "minute");
+  }
+  if (absSeconds < 86_400) {
+    return formatter.format(Math.round(diffSeconds / 3600), "hour");
+  }
+  return formatter.format(Math.round(diffSeconds / 86_400), "day");
 }
 
 function deviceLabel(claudeHome: string) {
@@ -997,6 +1345,473 @@ function InstallModal({
           </button>
           <button className="primary" disabled={busy} onClick={onConfirm} type="button">
             {modal.confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ────────────────── Sub-komponenty: panely a modaly ──────────────────
+
+function CollectionsPanel({
+  assets,
+  collections,
+  isAdmin,
+  onDelete,
+  onSave
+}: {
+  assets: CatalogAsset[];
+  collections: Collection[];
+  isAdmin: boolean;
+  onDelete: (slug: string) => void;
+  onSave: (input: { slug: string; name: string; description: string; assetIds: string[] }) => void;
+}) {
+  const [editing, setEditing] = useState<Collection | null>(null);
+  const [draftAssetIds, setDraftAssetIds] = useState<Set<string>>(new Set());
+  const [draftName, setDraftName] = useState("");
+  const [draftDescription, setDraftDescription] = useState("");
+  const [draftSlug, setDraftSlug] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+
+  function startEdit(collection: Collection | null) {
+    setEditing(collection);
+    setDraftAssetIds(new Set(collection?.assetIds ?? []));
+    setDraftName(collection?.name ?? "");
+    setDraftDescription(collection?.description ?? "");
+    setDraftSlug(collection?.slug ?? "");
+    setEditorOpen(true);
+  }
+
+  function closeEditor() {
+    setEditing(null);
+    setDraftAssetIds(new Set());
+    setDraftName("");
+    setDraftSlug("");
+    setDraftDescription("");
+    setEditorOpen(false);
+  }
+
+  function toggleAsset(assetId: string) {
+    setDraftAssetIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.add(assetId);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <section className="workspace collections-workspace">
+      <div className="info-panel">
+        <strong>Sady pro rychlou orientaci</strong>
+        <span>
+          Seskupte související skilly, příkazy a hooky do tematických balíčků (např. onboarding nebo frontend
+          workflow).
+        </span>
+      </div>
+      <div className="collections-grid">
+        {collections.map((collection) => (
+          <article className="collection-card" key={collection.id}>
+            <header>
+              <h2>{collection.name}</h2>
+              <span className="muted">{collection.slug}</span>
+            </header>
+            <p>{collection.description || "Bez popisu."}</p>
+            <ul>
+              {collection.assetIds.map((assetId) => {
+                const asset = assets.find((item) => item.id === assetId);
+                return (
+                  <li key={assetId}>
+                    <TypePill type={(asset?.type ?? "skill") as AssetType} />
+                    {asset?.name ?? assetId}
+                  </li>
+                );
+              })}
+            </ul>
+            {isAdmin ? (
+              <div className="collection-actions">
+                <button className="secondary" onClick={() => startEdit(collection)} type="button">
+                  Upravit
+                </button>
+                <button className="secondary dark" onClick={() => onDelete(collection.slug)} type="button">
+                  Smazat
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+        {isAdmin ? (
+          <button className="collection-create" onClick={() => startEdit(null)} type="button">
+            + Nová sada
+          </button>
+        ) : null}
+      </div>
+
+      {editorOpen && isAdmin ? (
+        <section className="collection-editor" aria-label="Editor sady">
+          <h2>{editing ? `Upravit ${editing.name}` : "Nová sada"}</h2>
+          <label>
+            <span>Název</span>
+            <input value={draftName} onChange={(event) => setDraftName(event.target.value)} />
+          </label>
+          <label>
+            <span>Slug</span>
+            <input
+              value={draftSlug}
+              disabled={Boolean(editing)}
+              onChange={(event) => setDraftSlug(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Popis</span>
+            <textarea
+              rows={3}
+              value={draftDescription}
+              onChange={(event) => setDraftDescription(event.target.value)}
+            />
+          </label>
+          <fieldset>
+            <legend>Vybrané položky</legend>
+            <div className="collection-asset-grid">
+              {assets.map((asset) => {
+                const selected = draftAssetIds.has(asset.id);
+                return (
+                  <label className={selected ? "selected" : ""} key={asset.id}>
+                    <input checked={selected} onChange={() => toggleAsset(asset.id)} type="checkbox" />
+                    <span>
+                      <TypePill type={asset.type} /> {asset.name}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+          <div className="collection-editor-actions">
+            <button
+              className="primary"
+              type="button"
+              onClick={() => {
+                if (!draftName || !draftSlug) {
+                  return;
+                }
+                onSave({
+                  slug: draftSlug,
+                  name: draftName,
+                  description: draftDescription,
+                  assetIds: Array.from(draftAssetIds)
+                });
+                closeEditor();
+              }}
+            >
+              Uložit
+            </button>
+            <button className="secondary" type="button" onClick={closeEditor}>
+              Zrušit
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function TeamPanel({
+  currentUserId,
+  isAdmin,
+  members,
+  onRefresh,
+  onRemoveMember,
+  onSetRole
+}: {
+  currentUserId: string;
+  isAdmin: boolean;
+  members: TeamMembership[];
+  onRefresh: () => void;
+  onRemoveMember: (userId: string) => void;
+  onSetRole: (userId: string, role: "admin" | "member" | "owner") => void;
+}) {
+  return (
+    <section className="workspace team-workspace">
+      <div className="info-panel">
+        <strong>Tým a oprávnění</strong>
+        <span>
+          Členem se automaticky stane každý, kdo se poprvé přihlásí. Pošlete kolegům odkaz na přihlašovací
+          stránku — po jejich registraci se zde objeví a vy jim můžete změnit roli nebo je odebrat.
+        </span>
+      </div>
+
+      <section className="team-members">
+        <header>
+          <h2>Členové ({members.length})</h2>
+          <button className="secondary" onClick={onRefresh} type="button">
+            Aktualizovat
+          </button>
+        </header>
+        <table>
+          <thead>
+            <tr>
+              <th>E-mail</th>
+              <th>Role</th>
+              <th>Členem od</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((member) => (
+              <tr key={member.userId}>
+                <td>{member.email}</td>
+                <td>
+                  {isAdmin && member.userId !== currentUserId ? (
+                    <select
+                      value={member.role}
+                      onChange={(event) =>
+                        onSetRole(member.userId, event.target.value as "admin" | "member" | "owner")
+                      }
+                    >
+                      <option value="member">Member</option>
+                      <option value="admin">Admin</option>
+                      <option value="owner">Owner</option>
+                    </select>
+                  ) : (
+                    member.role
+                  )}
+                </td>
+                <td>{formatRelativeTime(member.joinedAt)}</td>
+                <td>
+                  {isAdmin && member.userId !== currentUserId ? (
+                    <button
+                      className="secondary dark"
+                      onClick={() => onRemoveMember(member.userId)}
+                      type="button"
+                    >
+                      Odebrat
+                    </button>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </section>
+  );
+}
+
+function SigningKeysPanel({
+  keys,
+  onGenerate,
+  onRevoke
+}: {
+  keys: SigningKey[];
+  onGenerate: () => void;
+  onRevoke: (keyId: string) => void;
+}) {
+  return (
+    <section className="workspace signing-workspace">
+      <div className="info-panel">
+        <strong>Podepisování balíčků</strong>
+        <span>
+          Vygenerujte Ed25519 klíč. Privátní část si stáhněte a uložte; veřejnou Hub uchová a použije při ověření
+          podpisů u publikovaných položek.
+        </span>
+      </div>
+      <button className="primary" onClick={onGenerate} type="button">
+        Vygenerovat nový klíč
+      </button>
+      <ul className="signing-list">
+        {keys.length === 0 ? <li className="muted">Žádné klíče.</li> : null}
+        {keys.map((key) => (
+          <li key={key.id}>
+            <div>
+              <strong>{key.label}</strong>
+              <code>{key.publicKey.slice(0, 32)}…</code>
+              <span className="muted">
+                {key.revokedAt
+                  ? "revoknutý"
+                  : `vytvořen ${formatRelativeTime(key.createdAt)}${
+                      key.lastUsedAt ? ", použit " + formatRelativeTime(key.lastUsedAt) : ""
+                    }`}
+              </span>
+            </div>
+            {!key.revokedAt ? (
+              <button className="secondary dark" onClick={() => onRevoke(key.id)} type="button">
+                Revoknout
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function KeyRevealModal({
+  generatedKey,
+  onClose
+}: {
+  generatedKey: { label: string; privateKeyPem: string; fingerprint: string };
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="key-reveal-title" aria-modal="true" className="modal" role="dialog">
+        <div className="modal-head">
+          <div>
+            <h2 id="key-reveal-title">Privátní klíč „{generatedKey.label}"</h2>
+            <p>Tento klíč už nikdy znovu nezobrazíme. Stáhněte si ho a uložte bezpečně.</p>
+          </div>
+          <button aria-label="Zavřít" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <p>
+            Otisk: <code>{generatedKey.fingerprint}</code>
+          </p>
+          <textarea className="key-textarea" readOnly rows={10} value={generatedKey.privateKeyPem} />
+        </div>
+        <div className="modal-actions">
+          <button
+            className="primary"
+            onClick={async () => {
+              await navigator.clipboard.writeText(generatedKey.privateKeyPem);
+            }}
+            type="button"
+          >
+            Zkopírovat
+          </button>
+          <button
+            className="secondary"
+            onClick={() => {
+              const blob = new Blob([generatedKey.privateKeyPem], { type: "application/x-pem-file" });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `${generatedKey.label.replace(/\s+/g, "-")}.pem`;
+              link.click();
+              URL.revokeObjectURL(url);
+            }}
+            type="button"
+          >
+            Stáhnout PEM
+          </button>
+          <button className="secondary dark" onClick={onClose} type="button">
+            Uložil(a) jsem si klíč
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DiffModal({
+  asset,
+  diff,
+  onClose
+}: {
+  asset: CatalogAsset;
+  diff: AssetDiff;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="diff-title" aria-modal="true" className="modal wide" role="dialog">
+        <div className="modal-head">
+          <div>
+            <h2 id="diff-title">Diff: {asset.name}</h2>
+            <p>Porovnání lokální verze s aktuálním obsahem v katalogu.</p>
+          </div>
+          <button aria-label="Zavřít" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="modal-body">
+          {diff.files.length === 0 ? (
+            <p className="muted">Žádné soubory ke srovnání.</p>
+          ) : (
+            diff.files.map((file) => (
+              <section className="diff-file" key={file.path}>
+                <header>
+                  <strong>{file.path}</strong>
+                  <span className={`diff-status ${file.status}`}>{file.status}</span>
+                </header>
+                <pre>
+                  {file.lines.map((line, index) => (
+                    <span className={`diff-line ${line.type}`} key={index}>
+                      {line.type === "add" ? "+" : line.type === "remove" ? "-" : " "} {line.text}
+                    </span>
+                  ))}
+                </pre>
+              </section>
+            ))
+          )}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary" onClick={onClose} type="button">
+            Zavřít
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function VersionsModal({
+  asset,
+  isAdmin,
+  versions,
+  onClose,
+  onRollback
+}: {
+  asset: CatalogAsset;
+  isAdmin: boolean;
+  versions: Array<{ version: string; publishedAt: string; publishedBy: string; signature?: string }>;
+  onClose: () => void;
+  onRollback: (version: string) => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="versions-title" aria-modal="true" className="modal" role="dialog">
+        <div className="modal-head">
+          <div>
+            <h2 id="versions-title">Historie verzí: {asset.name}</h2>
+            <p>Každý publish je zachycený. Admin může vrátit katalog na starší verzi.</p>
+          </div>
+          <button aria-label="Zavřít" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="modal-body">
+          {versions.length === 0 ? (
+            <p className="muted">Žádné verze.</p>
+          ) : (
+            <ul className="version-list">
+              {versions.map((version) => (
+                <li key={version.version}>
+                  <div>
+                    <strong>{version.version}</strong>
+                    <span className="muted">
+                      publikováno {formatRelativeTime(version.publishedAt)}
+                      {version.signature ? " · podepsáno" : ""}
+                    </span>
+                  </div>
+                  {isAdmin ? (
+                    <button className="secondary" onClick={() => onRollback(version.version)} type="button">
+                      Vrátit
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button className="secondary" onClick={onClose} type="button">
+            Zavřít
           </button>
         </div>
       </section>

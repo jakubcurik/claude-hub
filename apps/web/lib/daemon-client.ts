@@ -1,10 +1,11 @@
 import type {
+  AssetDiff,
   CatalogAsset,
   DaemonHello,
   InstallPreview,
   LocalAsset,
   LocalAssetExport,
-  LocalAssetState,
+  LocalAssetState
 } from "@claude-hub/schema";
 
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:17373";
@@ -44,6 +45,21 @@ export class DaemonClient {
       body: { asset }
     });
     return response.state;
+  }
+
+  async uninstall(asset: CatalogAsset): Promise<LocalAssetState> {
+    const response = await this.request<{ state: LocalAssetState }>("/v1/uninstall", {
+      method: "POST",
+      body: { asset }
+    });
+    return response.state;
+  }
+
+  async diff(asset: CatalogAsset): Promise<AssetDiff> {
+    return this.request<AssetDiff>("/v1/diff", {
+      method: "POST",
+      body: { asset }
+    });
   }
 
   async setEnabled(asset: CatalogAsset, enabled: boolean): Promise<LocalAssetState> {

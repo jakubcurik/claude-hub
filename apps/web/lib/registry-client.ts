@@ -8,7 +8,7 @@ interface CatalogResponse {
 
 export async function getCatalogAssets(teamId: string): Promise<CatalogAsset[]> {
   const token = await getSessionToken();
-  if (!token) {
+  if (!token || !teamId) {
     return catalogAssets.map(normalizeCatalogCopy);
   }
 

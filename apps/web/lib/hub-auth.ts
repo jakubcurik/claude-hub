@@ -27,6 +27,14 @@ export function hubApiUrl() {
   return apiUrl;
 }
 
+export function hubTeamId() {
+  return process.env.CLAUDE_HUB_TEAM_ID ?? "main";
+}
+
+export function hubTeamName() {
+  return process.env.CLAUDE_HUB_TEAM_NAME ?? "Tým";
+}
+
 export async function getSessionToken() {
   const cookieStore = await cookies();
   return cookieStore.get(sessionCookieName)?.value ?? "";
@@ -40,9 +48,7 @@ export async function getCurrentUser(): Promise<HubUser | null> {
 
   const response = await fetch(`${hubApiUrl()}/v1/auth/session`, {
     cache: "no-store",
-    headers: {
-      authorization: `Bearer ${token}`
-    }
+    headers: { authorization: `Bearer ${token}` }
   });
 
   if (!response.ok) {
@@ -56,9 +62,7 @@ export async function getCurrentUser(): Promise<HubUser | null> {
 export async function loginWithEmail(email: string) {
   const response = await fetch(`${hubApiUrl()}/v1/auth/login`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ email })
   });
 
@@ -88,12 +92,34 @@ export async function clearCurrentSession() {
   if (token) {
     await fetch(`${hubApiUrl()}/v1/auth/logout`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`
-      }
+      headers: { authorization: `Bearer ${token}` }
     }).catch(() => undefined);
   }
 
   const cookieStore = await cookies();
   cookieStore.delete(sessionCookieName);
+}
+
+export async function hubFetch<T>(path: string, init?: RequestInit & { jsonBody?: unknown }): Promise<T> {
+  const token = await getSessionToken();
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined)
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  if (init?.jsonBody !== undefined) {
+    headers["content-type"] = "application/json";
+  }
+  const response = await fetch(`${hubApiUrl()}${path}`, {
+    ...init,
+    headers,
+    body: init?.jsonBody !== undefined ? JSON.stringify(init.jsonBody) : init?.body,
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+    throw new Error(payload.message || payload.error || `API request failed (${response.status}).`);
+  }
+  return (await response.json()) as T;
 }
