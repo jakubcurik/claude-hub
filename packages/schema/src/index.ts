@@ -219,6 +219,13 @@ export interface LocalAssetExport {
   files: AssetFile[];
 }
 
+export interface KnownProject {
+  path: string;
+  name: string;
+  claudeDirExists: boolean;
+  accessible: boolean;
+}
+
 export interface DaemonHello {
   ok: boolean;
   app: "claude-hub-daemon";
@@ -227,4 +234,5 @@ export interface DaemonHello {
   tokenRequired: boolean;
   claudeHome: string;
   capabilities: string[];
+  knownProjects?: KnownProject[];
 }

@@ -97,12 +97,13 @@ func (s *Server) handlePairPage(response http.ResponseWriter, request *http.Requ
 
 func (s *Server) handleHello(response http.ResponseWriter, request *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
-		"ok":            true,
-		"app":           "claude-hub-daemon",
-		"version":       "0.1.0",
-		"paired":        s.isAuthorized(request),
-		"tokenRequired": true,
-		"claudeHome":    s.manager.ClaudeHome,
+		"ok":             true,
+		"app":            "claude-hub-daemon",
+		"version":        "0.1.0",
+		"paired":         s.isAuthorized(request),
+		"tokenRequired":  true,
+		"claudeHome":     s.manager.ClaudeHome,
+		"knownProjects":  s.manager.KnownProjects(),
 		"capabilities": []string{
 			"catalog-state",
 			"install-preview",

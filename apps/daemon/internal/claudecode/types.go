@@ -38,6 +38,15 @@ type CatalogAsset struct {
 	Files       []AssetFile `json:"files"`
 }
 
+// KnownProject popisuje projekt, který daemon zná ze sekce projects v ~/.claude.json
+// nebo z workspace mountu. Slouží pro UI scope picker.
+type KnownProject struct {
+	Path            string `json:"path"`
+	Name            string `json:"name"`
+	ClaudeDirExists bool   `json:"claudeDirExists"`
+	Accessible      bool   `json:"accessible"`
+}
+
 // InstallOptions určuje cílový scope pro install/uninstall/enable operace.
 // Scope je "user" (default) nebo "project". Pro project je nutné zadat ProjectPath
 // (absolutní cesta ke kořeni projektu, který obsahuje .claude/ adresář).

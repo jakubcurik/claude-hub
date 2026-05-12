@@ -1396,6 +1396,17 @@ button.secondary.dark:hover {
   border-color: var(--accent-border);
 }
 
+.scope-warning {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ============================================================
    Notices
    ============================================================ */

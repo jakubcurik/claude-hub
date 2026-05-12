@@ -1770,6 +1770,63 @@ func (m *Manager) workspaceAssets() ([]LocalAsset, error) {
 	return assets, nil
 }
 
+// KnownProjects vrátí všechny projekty, které daemon zná: ze sekce projects
+// v ~/.claude.json plus z env-based workspace mountů. Pro každý projekt vrátí
+// flag accessible (`os.Stat` na cestě prošlo) a claudeDirExists (přítomnost
+// .claude/ adresáře). UI tyto informace používá v install scope pickeru.
+func (m *Manager) KnownProjects() []KnownProject {
+	seen := map[string]bool{}
+	result := make([]KnownProject, 0)
+
+	add := func(path string) {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "" {
+			return
+		}
+		key := strings.ToLower(path)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+
+		project := KnownProject{
+			Path: path,
+			Name: baseName(path),
+		}
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			project.Accessible = true
+			if claude, err := os.Stat(filepath.Join(path, ".claude")); err == nil && claude.IsDir() {
+				project.ClaudeDirExists = true
+			}
+		}
+		result = append(result, project)
+	}
+
+	for _, path := range m.projectsFromClaudeJson() {
+		add(path)
+	}
+	for _, root := range workspaceRoots() {
+		_ = filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || !entry.IsDir() {
+				return nil
+			}
+			if current != root && skippedWorkspaceDirs[entry.Name()] {
+				return filepath.SkipDir
+			}
+			if entry.Name() != ".claude" {
+				return nil
+			}
+			add(filepath.Dir(current))
+			return filepath.SkipDir
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
 // projectsFromClaudeJson vrátí cesty k projektům, ve kterých už uživatel
 // spustil Claude Code. Claude CLI je ukládá do ~/.claude.json sekce "projects".
 // V Dockeru jsou cesty v host formátu (D:/Dev/foo) — daemon je stejně zkusí

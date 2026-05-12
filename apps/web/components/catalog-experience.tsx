@@ -26,6 +26,7 @@ import type {
   InstallOperation,
   InstallOptions,
   InstallPreview,
+  KnownProject,
   LocalAsset,
   LocalAssetState,
   SigningKey,
@@ -156,8 +157,9 @@ export function CatalogExperience({
   const [diffModal, setDiffModal] = useState<{ asset: CatalogAsset; diff: AssetDiff } | null>(null);
   const [scopePicker, setScopePicker] = useState<{
     asset: CatalogAsset;
-    projects: Array<{ path: string; name: string }>;
+    projects: KnownProject[];
   } | null>(null);
+  const [knownProjects, setKnownProjects] = useState<KnownProject[]>([]);
   const [versionsModal, setVersionsModal] = useState<{
     asset: CatalogAsset;
     versions: Array<{ version: string; publishedAt: string; publishedBy: string; signature?: string }>;
@@ -229,12 +231,14 @@ export function CatalogExperience({
 
       setStates(Object.fromEntries(nextStates.map((item) => [item.assetId, item])));
       setLocalAssets(nextLocalAssets.map(normalizeLocalAsset));
+      setKnownProjects(hello.knownProjects ?? []);
       setIsConnected(true);
       setDaemonSummary(`Připojeno k Claude Code v ${hello.claudeHome}.`);
     } catch (error) {
       setIsConnected(false);
       setStates({});
       setLocalAssets([]);
+      setKnownProjects([]);
       setDaemonSummary(error instanceof Error ? error.message : "Lokální služba je nedostupná.");
     } finally {
       setBusy(false);
@@ -336,16 +340,25 @@ export function CatalogExperience({
   }
 
   async function requestInstall(asset: CatalogAsset) {
-    // Sesbírej detekované projekty z lokálních assetů.
-    const seen = new Map<string, { path: string; name: string }>();
-    for (const item of localAssets) {
-      if (item.scope === "project" && item.projectPath && item.projectName) {
-        if (!seen.has(item.projectPath)) {
-          seen.set(item.projectPath, { path: item.projectPath, name: item.projectName });
+    // Daemon vrací knownProjects ze sekce projects v ~/.claude.json.
+    // Pokud daemon zatím nestihl hello, použij projekty z localAssets jako fallback.
+    let projects: KnownProject[] = knownProjects;
+    if (projects.length === 0) {
+      const seen = new Map<string, KnownProject>();
+      for (const item of localAssets) {
+        if (item.scope === "project" && item.projectPath && item.projectName) {
+          if (!seen.has(item.projectPath)) {
+            seen.set(item.projectPath, {
+              path: item.projectPath,
+              name: item.projectName,
+              accessible: true,
+              claudeDirExists: true
+            });
+          }
         }
       }
+      projects = Array.from(seen.values());
     }
-    const projects = Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, "cs"));
     setScopePicker({ asset, projects });
   }
 
@@ -1348,15 +1361,28 @@ function InstallScopeModal({
   asset: CatalogAsset;
   onCancel: () => void;
   onConfirm: (options: InstallOptions) => void;
-  projects: Array<{ path: string; name: string }>;
+  projects: KnownProject[];
 }) {
+  // Setřídit: dostupné s .claude/ první, pak ostatní dostupné, pak nedostupné.
+  const sortedProjects = useMemo(() => {
+    return [...projects].sort((a, b) => {
+      const rank = (p: KnownProject) =>
+        p.accessible && p.claudeDirExists ? 0 : p.accessible ? 1 : 2;
+      const diff = rank(a) - rank(b);
+      if (diff !== 0) return diff;
+      return a.name.localeCompare(b.name, "cs");
+    });
+  }, [projects]);
+
+  const firstAccessible = sortedProjects.find((p) => p.accessible);
   const [scope, setScope] = useState<"user" | "project">("user");
-  const [projectPath, setProjectPath] = useState<string>(projects[0]?.path ?? "");
+  const [projectPath, setProjectPath] = useState<string>(firstAccessible?.path ?? "");
+
+  const selectedProject = sortedProjects.find((p) => p.path === projectPath);
+  const canSubmit = scope === "user" || (scope === "project" && selectedProject?.accessible);
 
   function submit() {
-    if (scope === "project" && !projectPath) {
-      return;
-    }
+    if (!canSubmit) return;
     onConfirm({ scope, projectPath: scope === "project" ? projectPath : undefined });
   }
 
@@ -1408,18 +1434,39 @@ function InstallScopeModal({
                     ? "Žádné projekty zatím detekované. Spusťte v projektu Claude Code, pak se objeví zde."
                     : "Uloží se do <project>/.claude/, projekt si položku ponese s sebou."}
                 </span>
-                {scope === "project" && projects.length > 0 ? (
-                  <select
-                    className="scope-project-select"
-                    onChange={(event) => setProjectPath(event.target.value)}
-                    value={projectPath}
-                  >
-                    {projects.map((project) => (
-                      <option key={project.path} value={project.path}>
-                        {project.name} — {project.path}
-                      </option>
-                    ))}
-                  </select>
+                {scope === "project" && sortedProjects.length > 0 ? (
+                  <>
+                    <select
+                      className="scope-project-select"
+                      onChange={(event) => setProjectPath(event.target.value)}
+                      value={projectPath}
+                    >
+                      {sortedProjects.map((project) => {
+                        const note =
+                          !project.accessible
+                            ? " (mimo Docker mount)"
+                            : !project.claudeDirExists
+                            ? " (chybí .claude/)"
+                            : "";
+                        return (
+                          <option
+                            disabled={!project.accessible}
+                            key={project.path}
+                            value={project.path}
+                          >
+                            {project.name} — {project.path}
+                            {note}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    {selectedProject && !selectedProject.accessible ? (
+                      <p className="scope-warning">
+                        Tento projekt není pro daemona v aktuálním Docker setupu dostupný. Buď ho
+                        přidejte do compose mountů, nebo spusťte daemon nativně.
+                      </p>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             </label>
@@ -1429,7 +1476,7 @@ function InstallScopeModal({
           <button className="secondary" onClick={onCancel} type="button">
             Zrušit
           </button>
-          <button className="primary" onClick={submit} type="button">
+          <button className="primary" disabled={!canSubmit} onClick={submit} type="button">
             Pokračovat
           </button>
         </div>
