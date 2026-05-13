@@ -11,7 +11,9 @@ services:
       timeout: 5s
       retries: 6
     ports:
-      - "5432:5432"
+      # Host port 15432, aby nekolidoval se systémovým Postgresem na NASu (Synology
+      # používá 5432 pro vestavěné DB). Pro lokální dev přepiš v compose.override.yaml.
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
@@ -35,45 +37,7 @@ services:
       timeout: 5s
       retries: 6
     ports:
-      - "8787:8787"
-
-  daemon:
-    build:
-      context: .
-      dockerfile: apps/daemon/Dockerfile
-    environment:
-      CLAUDE_HUB_WORKSPACE_ROOTS: /workspace-roots/d-claude
-      CLAUDE_HUB_ALLOWED_WEB_ORIGINS: ${CLAUDE_HUB_ALLOWED_WEB_ORIGINS:-http://localhost:3100}
-    command:
-      - "-host"
-      - "0.0.0.0"
-      - "-port"
-      - "17373"
-      - "-otlp-host"
-      - "0.0.0.0"
-      - "-otlp-port"
-      - "4318"
-      - "-claude-home"
-      - "/data/claude"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:17373/v1/hello"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-    ports:
-      - "17373:17373"
-      - "4318:4318"
-    volumes:
-      # Na Windows použijte ${USERPROFILE}, na Linux/macOS ${HOME}.
-      # Docker Compose dosadí prázdný řetězec, pokud proměnná neexistuje, proto fallback.
-      - ${CLAUDE_HUB_CLAUDE_HOME:-${USERPROFILE:-${HOME}}/.claude}:/data/claude
-      # ~/.claude.json drží user-level MCP konfiguraci (kterou CLI ukládá vedle .claude/).
-      # Mount souboru zpřístupní daemonu detekci i instalaci MCP serverů.
-      - ${CLAUDE_HUB_CLAUDE_JSON:-${USERPROFILE:-${HOME}}/.claude.json}:/data/.claude.json
-      # Workspace root je read-write, aby daemon mohl při Install do projektu
-      # zapsat soubory pod <project>/.claude/. V produkci nativní daemon má
-      # ke všem cestám stejná práva jako Claude Code CLI.
-      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude
+      - "127.0.0.1:8787:8787"
 
   web:
     build:
@@ -82,8 +46,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      daemon:
-        condition: service_started
     environment:
       CLAUDE_HUB_API_URL: http://api:8787
       CLAUDE_HUB_DAEMON_BREW_PACKAGE: ${CLAUDE_HUB_DAEMON_BREW_PACKAGE:-animato-lab/tap/claude-hub-daemon}
@@ -93,7 +55,9 @@ services:
       CLAUDE_HUB_TEAM_NAME: ${CLAUDE_HUB_TEAM_NAME:-Tým}
       NODE_ENV: production
     ports:
-      - "3100:3000"
+      # Localhost-only — produkční přístup řeší reverse proxy (např. nginx terminuje TLS
+      # na hub.animato-lab.cz a forwarduje na 127.0.0.1:3000).
+      - "127.0.0.1:3000:3000"
 
 volumes:
   postgres-data:

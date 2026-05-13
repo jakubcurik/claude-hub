@@ -1,0 +1,18 @@
+# Per-machine override portů pro lokální dev. Zkopíruj jako `compose.override.yaml`
+# (Docker Compose ho pak automaticky merguje s `compose.yaml`):
+#
+#   cp compose.override.yaml.example compose.override.yaml
+#
+# Hodí se, když na lokálu chceš jiné porty než NAS defaulty (např. standardní
+# Postgres 5432, nebo web na 3100 ať nekoliduje s jinou app na 3000).
+#
+# Soubor je v .gitignore, takže si může každý vývojář držet vlastní.
+
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5432:5432"
+
+  web:
+    ports: !override
+      - "127.0.0.1:3100:3000"

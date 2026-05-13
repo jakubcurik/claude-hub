@@ -75,12 +75,16 @@ cd claude-hub
 npm run docker:up
 ```
 
+Skript spustí `compose.yaml + compose.dev.yaml` — base stack (postgres, api, web) plus `daemon` službu pro lokální dev.
+
 Otevřete:
 
-- web aplikace — <http://localhost:3100>
+- web aplikace — <http://localhost:3000>
 - registry API health — <http://localhost:8787/health>
 - daemon hello — <http://localhost:17373/v1/hello>
-- Postgres — `localhost:5432` (DB `claude_hub`, uživatel `claude_hub`)
+- Postgres — `localhost:15432` (DB `claude_hub`, uživatel `claude_hub`)
+
+> **Vlastní porty?** Zkopírujte `compose.override.yaml.example` jako `compose.override.yaml` — Docker Compose ho automaticky merguje a typicky vrátí web na 3100, Postgres na 5432. Soubor je v `.gitignore`, takže si může každý vývojář držet vlastní.
 
 Vyzvedněte párovací token:
 
@@ -101,7 +105,7 @@ npm run docker:down
 ```bash
 npm install
 docker compose up postgres                 # nebo libovolný Postgres 16+
-set CLAUDE_HUB_DATABASE_URL=postgres://claude_hub:claude_hub@127.0.0.1:5432/claude_hub
+set CLAUDE_HUB_DATABASE_URL=postgres://claude_hub:claude_hub@127.0.0.1:15432/claude_hub
 set CLAUDE_HUB_API_URL=http://127.0.0.1:8787
 
 # tři terminály
@@ -109,6 +113,8 @@ npm run dev:api
 npm run dev:web
 npm run dev:daemon
 ```
+
+> Pokud používáte `compose.override.yaml` s portem 5432, upravte connection string na `@127.0.0.1:5432`.
 
 Výchozí URL:
 
@@ -157,12 +163,12 @@ Daemon je samostatný Go modul řízený souborem `go.work`. Nepoužívá npm.
 
 ## Docker Desktop
 
-Soubor `compose.yaml` připojuje daemon k vašemu skutečnému Claude Code home a k pracovnímu rootu:
+Soubor `compose.dev.yaml` (lokální dev overlay) připojuje `daemon` k vašemu skutečnému Claude Code home a k pracovnímu rootu:
 
 ```yaml
 volumes:
   - ${USERPROFILE}/.claude:/data/claude
-  - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-D:/Claude}:/workspace-roots/d-claude:ro
+  - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-D:/Claude}:/workspace-roots/d-claude
 ```
 
 Díky tomu web zobrazí reálné uživatelské skilly, příkazy, hooky, MCP konfigurace a pluginy a navíc i project-level assety z `D:\Claude\<projekt>\.claude\`. Pokud máte projekty jinde, nastavte před spuštěním:
@@ -172,7 +178,16 @@ set CLAUDE_HUB_WORKSPACE_ROOT_D=E:\Workspace
 npm run docker:up
 ```
 
-Pracovní root je do kontejneru namapovaný **read-only** — daemon z něj jen čte detekované assety.
+### Produkční deploy (NAS / server)
+
+Pro produkci stačí samotný `compose.yaml` — žádný daemon, všechny porty bindované jen na `127.0.0.1` (přístup zvenčí řeší reverse proxy):
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Web posloucháme na `127.0.0.1:3000`, API na `127.0.0.1:8787`, Postgres na `127.0.0.1:15432` (port 15432, aby nekolidoval se systémovým Postgresem na Synology NASu).
 
 ## Konfigurace přes proměnné prostředí
 

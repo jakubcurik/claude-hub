@@ -6,6 +6,10 @@ node_modules/
 .env.*
 !.env.example
 
+# Per-machine Docker Compose override (porty, mounty...)
+compose.override.yaml
+!compose.override.yaml.example
+
 # Logs
 *.log
 npm-debug.log*

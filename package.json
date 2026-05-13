@@ -16,9 +16,10 @@
     "typecheck": "npm --workspaces --if-present run typecheck",
     "test": "npm --workspaces --if-present test && go test ./apps/daemon/...",
     "test:daemon": "go test ./apps/daemon/...",
-    "docker:up": "docker compose up --build",
-    "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f"
+    "docker:up": "docker compose -f compose.yaml -f compose.dev.yaml up --build",
+    "docker:up:prod": "docker compose up --build",
+    "docker:down": "docker compose -f compose.yaml -f compose.dev.yaml down",
+    "docker:logs": "docker compose -f compose.yaml -f compose.dev.yaml logs -f"
   },
   "engines": {
     "node": ">=22",

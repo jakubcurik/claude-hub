@@ -1,0 +1,51 @@
+# Lokální dev overlay. Přidává `daemon` službu (mountuje uživatelské ~/.claude
+# a workspace root) a vyžaduje, aby web čekal na daemon.
+#
+# Použití:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+#
+# Pro NAS / produkci stačí samotné `docker compose up -d` (bez tohoto souboru).
+
+services:
+  web:
+    depends_on:
+      daemon:
+        condition: service_started
+
+  daemon:
+    build:
+      context: .
+      dockerfile: apps/daemon/Dockerfile
+    environment:
+      CLAUDE_HUB_WORKSPACE_ROOTS: /workspace-roots/d-claude
+      CLAUDE_HUB_ALLOWED_WEB_ORIGINS: ${CLAUDE_HUB_ALLOWED_WEB_ORIGINS:-http://localhost:3000}
+    command:
+      - "-host"
+      - "0.0.0.0"
+      - "-port"
+      - "17373"
+      - "-otlp-host"
+      - "0.0.0.0"
+      - "-otlp-port"
+      - "4318"
+      - "-claude-home"
+      - "/data/claude"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:17373/v1/hello"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    ports:
+      - "127.0.0.1:17373:17373"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      # Na Windows použijte ${USERPROFILE}, na Linux/macOS ${HOME}.
+      # Docker Compose dosadí prázdný řetězec, pokud proměnná neexistuje, proto fallback.
+      - ${CLAUDE_HUB_CLAUDE_HOME:-${USERPROFILE:-${HOME}}/.claude}:/data/claude
+      # ~/.claude.json drží user-level MCP konfiguraci (kterou CLI ukládá vedle .claude/).
+      # Mount souboru zpřístupní daemonu detekci i instalaci MCP serverů.
+      - ${CLAUDE_HUB_CLAUDE_JSON:-${USERPROFILE:-${HOME}}/.claude.json}:/data/.claude.json
+      # Workspace root je read-write, aby daemon mohl při Install do projektu
+      # zapsat soubory pod <project>/.claude/. V produkci nativní daemon má
+      # ke všem cestám stejná práva jako Claude Code CLI.
+      - ${CLAUDE_HUB_WORKSPACE_ROOT_D:-${HOME:-${USERPROFILE}}/Claude}:/workspace-roots/d-claude
