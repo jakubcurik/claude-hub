@@ -1,5 +1,0 @@
-PackageIdentifier: Animato.ClaudeHubDaemon
-PackageVersion: ${VERSION}
-DefaultLocale: cs-CZ
-ManifestType: version
-ManifestVersion: 1.6.0

@@ -48,8 +48,7 @@ services:
         condition: service_healthy
     environment:
       CLAUDE_HUB_API_URL: http://api:8787
-      CLAUDE_HUB_DAEMON_BREW_PACKAGE: ${CLAUDE_HUB_DAEMON_BREW_PACKAGE:-animato-lab/tap/claude-hub-daemon}
-      CLAUDE_HUB_DAEMON_WINGET_ID: ${CLAUDE_HUB_DAEMON_WINGET_ID:-Animato.ClaudeHubDaemon}
+      CLAUDE_HUB_DAEMON_RELEASE_BASE: ${CLAUDE_HUB_DAEMON_RELEASE_BASE:-https://github.com/jakubcurik/claude-hub/releases/latest/download}
       CLAUDE_HUB_PUBLIC_URL: ${CLAUDE_HUB_PUBLIC_URL:-https://hub.animato-lab.cz}
       CLAUDE_HUB_TEAM_ID: ${CLAUDE_HUB_TEAM_ID:-main}
       CLAUDE_HUB_TEAM_NAME: ${CLAUDE_HUB_TEAM_NAME:-Tým}

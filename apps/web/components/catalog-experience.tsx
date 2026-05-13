@@ -69,9 +69,9 @@ interface CatalogExperienceProps {
 }
 
 interface DaemonInstallConfig {
-  brewPackage: string;
-  hubUrl: string;
-  wingetId: string;
+  // Base URL k GitHub release assetům, např.
+  // "https://github.com/jakubcurik/claude-hub/releases/latest/download"
+  releaseDownloadBase: string;
 }
 
 interface PublishFields {
@@ -922,24 +922,27 @@ function DaemonOnboarding({
               </button>
             ))}
           </div>
+          <DaemonDownload option={selectedOption} />
           <InstallCommand
-            command={selectedOption.primaryCommand}
-            copied={copiedCommand === selectedOption.primaryCommand}
-            label={selectedOption.primaryLabel}
+            command={selectedOption.runCommand}
+            copied={copiedCommand === selectedOption.runCommand}
+            label="Po stažení spusťte v terminálu"
             onCopy={copyCommand}
           />
-          <details className="fallback-install">
-            <summary>Alternativní příkaz</summary>
-            {selectedOption.fallbackCommands.map((fallback) => (
-              <InstallCommand
-                command={fallback.command}
-                copied={copiedCommand === fallback.command}
-                key={fallback.command}
-                label={fallback.label}
-                onCopy={copyCommand}
-              />
-            ))}
-          </details>
+          {selectedOption.altDownload ? (
+            <details className="fallback-install">
+              <summary>Jiná architektura</summary>
+              <a
+                className="install-download-link"
+                href={selectedOption.altDownload.url}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <Download size={15} />
+                {selectedOption.altDownload.label} — {selectedOption.altDownload.filename}
+              </a>
+            </details>
+          ) : null}
         </div>
         <div className="onboarding-step">
           <span>2</span>
@@ -967,11 +970,15 @@ function DaemonOnboarding({
 type InstallPlatform = "windows" | "macos" | "linux";
 
 interface InstallOption {
-  fallbackCommands: Array<{ command: string; label: string }>;
   label: string;
   platform: InstallPlatform;
-  primaryCommand: string;
-  primaryLabel: string;
+  downloadUrl: string;
+  downloadFilename: string;
+  // Krátký návod jak po stažení daemon spustit (jeden řádek terminálu).
+  runCommand: string;
+  // Volitelná druhá architektura (typicky ARM). Když je null, ukáže se jen
+  // primární download. ARM Mac (M1+) je realistický use case, ARM Win nikoliv.
+  altDownload?: { url: string; filename: string; label: string };
 }
 
 function InstallCommand({
@@ -997,44 +1004,56 @@ function InstallCommand({
   );
 }
 
+function DaemonDownload({ option }: { option: InstallOption }) {
+  return (
+    <a
+      className="install-download primary"
+      href={option.downloadUrl}
+      rel="noreferrer"
+      target="_blank"
+    >
+      <Download size={16} />
+      <span>
+        <strong>Stáhnout pro {option.label}</strong>
+        <small>{option.downloadFilename}</small>
+      </span>
+    </a>
+  );
+}
+
 function daemonInstallOptions(config: DaemonInstallConfig): InstallOption[] {
-  const hubUrl = config.hubUrl.replace(/\/$/, "");
+  const base = config.releaseDownloadBase.replace(/\/$/, "");
   return [
     {
-      fallbackCommands: [
-        {
-          command: `irm ${hubUrl}/install/windows.ps1 | iex`,
-          label: "Záložní PowerShell příkaz"
-        }
-      ],
       label: "Windows",
       platform: "windows",
-      primaryCommand: `winget install ${config.wingetId}`,
-      primaryLabel: "Doporučeno přes winget"
+      downloadUrl: `${base}/claude-hub-daemon_windows_amd64.zip`,
+      downloadFilename: "claude-hub-daemon_windows_amd64.zip",
+      runCommand: ".\\claude-hub-daemon.exe"
     },
     {
-      fallbackCommands: [
-        {
-          command: `curl -fsSL ${hubUrl}/install/macos.sh | sh`,
-          label: "Záložní shell příkaz"
-        }
-      ],
       label: "macOS",
       platform: "macos",
-      primaryCommand: `brew install ${config.brewPackage}`,
-      primaryLabel: "Doporučeno přes Homebrew"
+      downloadUrl: `${base}/claude-hub-daemon_darwin_arm64.tar.gz`,
+      downloadFilename: "claude-hub-daemon_darwin_arm64.tar.gz",
+      runCommand: "tar -xzf claude-hub-daemon_darwin_arm64.tar.gz && ./claude-hub-daemon",
+      altDownload: {
+        url: `${base}/claude-hub-daemon_darwin_amd64.tar.gz`,
+        filename: "claude-hub-daemon_darwin_amd64.tar.gz",
+        label: "Intel Mac (amd64)"
+      }
     },
     {
-      fallbackCommands: [
-        {
-          command: `curl -fsSL ${hubUrl}/install/linux.sh | sh`,
-          label: "Instalace přes shell"
-        }
-      ],
       label: "Linux",
       platform: "linux",
-      primaryCommand: `curl -fsSL ${hubUrl}/install/linux.sh | sh`,
-      primaryLabel: "Doporučeno"
+      downloadUrl: `${base}/claude-hub-daemon_linux_amd64.tar.gz`,
+      downloadFilename: "claude-hub-daemon_linux_amd64.tar.gz",
+      runCommand: "tar -xzf claude-hub-daemon_linux_amd64.tar.gz && ./claude-hub-daemon",
+      altDownload: {
+        url: `${base}/claude-hub-daemon_linux_arm64.tar.gz`,
+        filename: "claude-hub-daemon_linux_arm64.tar.gz",
+        label: "ARM64 (např. Raspberry Pi)"
+      }
     }
   ];
 }
