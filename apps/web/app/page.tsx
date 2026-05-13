@@ -74,9 +74,7 @@ export default async function Page({
       <CatalogExperience
         collections={collections}
         daemonInstall={{
-          releaseDownloadBase:
-            process.env.CLAUDE_HUB_DAEMON_RELEASE_BASE ??
-            "https://github.com/jakubcurik/claude-hub/releases/latest/download"
+          hubUrl: process.env.CLAUDE_HUB_PUBLIC_URL ?? "https://hub.animato-lab.cz"
         }}
         initialAssets={assets}
         members={members}

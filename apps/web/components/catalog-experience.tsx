@@ -69,9 +69,9 @@ interface CatalogExperienceProps {
 }
 
 interface DaemonInstallConfig {
-  // Base URL k GitHub release assetům, např.
-  // "https://github.com/jakubcurik/claude-hub/releases/latest/download"
-  releaseDownloadBase: string;
+  // Base URL hubu, na kterém běží install endpointy (např. https://hub.animato-lab.cz).
+  // UI z něj poskládá příkazy `irm <hubUrl>/install/windows.ps1 | iex` apod.
+  hubUrl: string;
 }
 
 interface PublishFields {
@@ -922,27 +922,12 @@ function DaemonOnboarding({
               </button>
             ))}
           </div>
-          <DaemonDownload option={selectedOption} />
           <InstallCommand
-            command={selectedOption.runCommand}
-            copied={copiedCommand === selectedOption.runCommand}
-            label="Po stažení spusťte v terminálu"
+            command={selectedOption.command}
+            copied={copiedCommand === selectedOption.command}
+            label={selectedOption.commandLabel}
             onCopy={copyCommand}
           />
-          {selectedOption.altDownload ? (
-            <details className="fallback-install">
-              <summary>Jiná architektura</summary>
-              <a
-                className="install-download-link"
-                href={selectedOption.altDownload.url}
-                rel="noreferrer"
-                target="_blank"
-              >
-                <Download size={15} />
-                {selectedOption.altDownload.label} — {selectedOption.altDownload.filename}
-              </a>
-            </details>
-          ) : null}
         </div>
         <div className="onboarding-step">
           <span>2</span>
@@ -972,13 +957,8 @@ type InstallPlatform = "windows" | "macos" | "linux";
 interface InstallOption {
   label: string;
   platform: InstallPlatform;
-  downloadUrl: string;
-  downloadFilename: string;
-  // Krátký návod jak po stažení daemon spustit (jeden řádek terminálu).
-  runCommand: string;
-  // Volitelná druhá architektura (typicky ARM). Když je null, ukáže se jen
-  // primární download. ARM Mac (M1+) je realistický use case, ARM Win nikoliv.
-  altDownload?: { url: string; filename: string; label: string };
+  command: string;
+  commandLabel: string;
 }
 
 function InstallCommand({
@@ -1004,56 +984,26 @@ function InstallCommand({
   );
 }
 
-function DaemonDownload({ option }: { option: InstallOption }) {
-  return (
-    <a
-      className="install-download primary"
-      href={option.downloadUrl}
-      rel="noreferrer"
-      target="_blank"
-    >
-      <Download size={16} />
-      <span>
-        <strong>Stáhnout pro {option.label}</strong>
-        <small>{option.downloadFilename}</small>
-      </span>
-    </a>
-  );
-}
-
 function daemonInstallOptions(config: DaemonInstallConfig): InstallOption[] {
-  const base = config.releaseDownloadBase.replace(/\/$/, "");
+  const hub = config.hubUrl.replace(/\/$/, "");
   return [
     {
       label: "Windows",
       platform: "windows",
-      downloadUrl: `${base}/claude-hub-daemon_windows_amd64.zip`,
-      downloadFilename: "claude-hub-daemon_windows_amd64.zip",
-      runCommand: ".\\claude-hub-daemon.exe"
+      command: `irm ${hub}/install/windows.ps1 | iex`,
+      commandLabel: "PowerShell"
     },
     {
       label: "macOS",
       platform: "macos",
-      downloadUrl: `${base}/claude-hub-daemon_darwin_arm64.tar.gz`,
-      downloadFilename: "claude-hub-daemon_darwin_arm64.tar.gz",
-      runCommand: "tar -xzf claude-hub-daemon_darwin_arm64.tar.gz && ./claude-hub-daemon",
-      altDownload: {
-        url: `${base}/claude-hub-daemon_darwin_amd64.tar.gz`,
-        filename: "claude-hub-daemon_darwin_amd64.tar.gz",
-        label: "Intel Mac (amd64)"
-      }
+      command: `curl -fsSL ${hub}/install/unix.sh | sh`,
+      commandLabel: "Terminál"
     },
     {
       label: "Linux",
       platform: "linux",
-      downloadUrl: `${base}/claude-hub-daemon_linux_amd64.tar.gz`,
-      downloadFilename: "claude-hub-daemon_linux_amd64.tar.gz",
-      runCommand: "tar -xzf claude-hub-daemon_linux_amd64.tar.gz && ./claude-hub-daemon",
-      altDownload: {
-        url: `${base}/claude-hub-daemon_linux_arm64.tar.gz`,
-        filename: "claude-hub-daemon_linux_arm64.tar.gz",
-        label: "ARM64 (např. Raspberry Pi)"
-      }
+      command: `curl -fsSL ${hub}/install/unix.sh | sh`,
+      commandLabel: "Terminál"
     }
   ];
 }

@@ -1,0 +1,7 @@
+# Shell skripty MUSI mit LF line endings, jinak interpret na Linuxu/macOS hodi
+# `bad interpreter: No such file or directory` kvuli \r v shebangu.
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# PowerShell ma rad CRLF, ale stejne funguje LF. Drzme se UTF-8 LF napric repem.
+*.ps1       text eol=crlf
