@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import type { CatalogAsset } from "@claude-hub/schema";
-import { computeContentHash, type RegistryRepository, type HubUser } from "./repository.js";
+import { AuthError, computeContentHash, type RegistryRepository, type HubUser } from "./repository.js";
 import { TelemetryRepository } from "./telemetry-repository.js";
 import { registerTelemetryRoutes } from "./telemetry-routes.js";
 
@@ -213,7 +213,7 @@ export async function registerRoutes(
   // ────────── Auth ──────────
 
   app.post<{
-    Body: { email: string };
+    Body: { email: string; password: string };
   }>(
     "/v1/auth/login",
     {
@@ -223,20 +223,69 @@ export async function registerRoutes(
       schema: {
         body: {
           type: "object",
-          required: ["email"],
-          properties: { email: { type: "string", minLength: 3, format: "email" } }
+          required: ["email", "password"],
+          properties: {
+            email: { type: "string", minLength: 3, format: "email" },
+            password: { type: "string", minLength: 1 }
+          }
         }
       }
     },
     async (request, reply) => {
       try {
-        return await repository.login(request.body.email);
+        return await repository.login(request.body.email, request.body.password);
       } catch (error) {
+        if (error instanceof AuthError) {
+          return sendError(reply, error.status, error.code, error.message);
+        }
         return sendError(
           reply,
           400,
           "invalid_email",
           error instanceof Error ? error.message : "Přihlášení se nepodařilo."
+        );
+      }
+    }
+  );
+
+  app.post<{
+    Body: { email: string; password: string; registryCode: string };
+  }>(
+    "/v1/auth/register",
+    {
+      config: {
+        // Přísnější limit než login — útoky na guess registry code by nemělo
+        // jít dělat brute-force.
+        rateLimit: { max: 5, timeWindow: "1 minute" }
+      },
+      schema: {
+        body: {
+          type: "object",
+          required: ["email", "password", "registryCode"],
+          properties: {
+            email: { type: "string", minLength: 3, format: "email" },
+            password: { type: "string", minLength: 8 },
+            registryCode: { type: "string", minLength: 1 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        return await repository.register(
+          request.body.email,
+          request.body.password,
+          request.body.registryCode
+        );
+      } catch (error) {
+        if (error instanceof AuthError) {
+          return sendError(reply, error.status, error.code, error.message);
+        }
+        return sendError(
+          reply,
+          400,
+          "registration_failed",
+          error instanceof Error ? error.message : "Registrace se nepodařila."
         );
       }
     }

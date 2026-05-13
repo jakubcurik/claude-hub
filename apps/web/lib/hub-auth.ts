@@ -59,11 +59,19 @@ export async function getCurrentUser(): Promise<HubUser | null> {
   return payload.user;
 }
 
-export async function loginWithEmail(email: string) {
-  const response = await fetch(`${hubApiUrl()}/v1/auth/login`, {
+export async function loginWithEmail(email: string, password: string) {
+  return submitAuth("/v1/auth/login", { email, password });
+}
+
+export async function registerWithEmail(email: string, password: string, registryCode: string) {
+  return submitAuth("/v1/auth/register", { email, password, registryCode });
+}
+
+async function submitAuth(path: string, body: Record<string, string>) {
+  const response = await fetch(`${hubApiUrl()}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email })
+    body: JSON.stringify(body)
   });
 
   const payload = (await response.json().catch(() => ({}))) as Partial<LoginResponse> & {
@@ -72,7 +80,7 @@ export async function loginWithEmail(email: string) {
   };
 
   if (!response.ok || !payload.sessionToken || !payload.expiresAt || !payload.user) {
-    throw new Error(payload.message || payload.error || "Přihlášení se nepodařilo.");
+    throw new Error(payload.message || payload.error || "Operace se nezdařila.");
   }
 
   const cookieStore = await cookies();

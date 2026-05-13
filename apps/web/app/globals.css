@@ -563,6 +563,32 @@ p {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.login-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.login-footnote {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.login-footnote a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.login-footnote a:hover {
+  text-decoration: underline;
+}
+
 /* ============================================================
    Topbar
    ============================================================ */

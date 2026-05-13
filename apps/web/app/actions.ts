@@ -25,6 +25,7 @@ import {
 } from "@/lib/analytics-client";
 import {
   clearCurrentSession,
+  registerWithEmail,
   getCurrentUser,
   getSessionToken,
   hubApiUrl,
@@ -85,9 +86,30 @@ export async function publishLocalAssetToCatalog(
   return payload.asset;
 }
 
-export async function loginAction(formData: FormData) {
+export interface AuthFormState {
+  error?: string;
+}
+
+export async function loginAction(_prev: AuthFormState, formData: FormData): Promise<AuthFormState> {
   const email = String(formData.get("email") ?? "");
-  await loginWithEmail(email);
+  const password = String(formData.get("password") ?? "");
+  try {
+    await loginWithEmail(email, password);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Přihlášení se nepodařilo." };
+  }
+  redirect("/");
+}
+
+export async function registerAction(_prev: AuthFormState, formData: FormData): Promise<AuthFormState> {
+  const email = String(formData.get("email") ?? "");
+  const password = String(formData.get("password") ?? "");
+  const registryCode = String(formData.get("registryCode") ?? "");
+  try {
+    await registerWithEmail(email, password, registryCode);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Registrace se nezdařila." };
+  }
   redirect("/");
 }
 

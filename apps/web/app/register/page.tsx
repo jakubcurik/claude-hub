@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/lib/hub-auth";
-import { LoginForm } from "./login-form";
+import { RegisterForm } from "./register-form";
 
-export default async function LoginPage() {
+export default async function RegisterPage() {
   const user = await getCurrentUser();
   if (user) {
     redirect("/");
@@ -16,12 +16,12 @@ export default async function LoginPage() {
           <div className="brand-mark">CH</div>
           <div>
             <strong>Claude Hub</strong>
-            <span>Katalog pro tým</span>
+            <span>Registrace nového účtu</span>
           </div>
         </div>
-        <LoginForm />
+        <RegisterForm />
         <p className="login-footnote">
-          Nemáte ještě účet? <Link href="/register">Registrace s kódem</Link>
+          Už máte účet? <Link href="/login">Přihlásit se</Link>
         </p>
       </section>
     </main>

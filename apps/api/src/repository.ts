@@ -1,5 +1,16 @@
 import { Pool, type PoolConfig } from "pg";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+
+/**
+ * Chyby z auth flow nesou HTTP status, aby je routes.ts mohly přemapovat
+ * na JSON odpověď bez stringového matchování.
+ */
+export class AuthError extends Error {
+  constructor(public readonly status: number, public readonly code: string, message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
 import type { CatalogAsset } from "@claude-hub/schema";
 import { seedAssets } from "./seed-assets.js";
 
@@ -95,6 +106,7 @@ interface UserRow {
   email: string;
   name: string;
   default_team_id: string;
+  password_hash?: string | null;
 }
 
 export class RegistryRepository {
@@ -135,8 +147,16 @@ export class RegistryRepository {
         email text NOT NULL UNIQUE,
         name text NOT NULL,
         default_team_id text NOT NULL,
+        password_hash text,
         created_at timestamptz NOT NULL DEFAULT now()
       )
+    `);
+
+    // Migrace pro starší instance, které ještě password_hash neměly. Stávající
+    // uživatel s NULL password_hash si při prvním passwd-loginu nastaví heslo
+    // přes register (claim flow).
+    await this.pool.query(`
+      ALTER TABLE hub_users ADD COLUMN IF NOT EXISTS password_hash text
     `);
 
     await this.pool.query(`
@@ -380,33 +400,97 @@ export class RegistryRepository {
 
   // ────────────────── Auth ──────────────────
 
-  async login(email: string): Promise<{ user: HubUser; sessionToken: string; expiresAt: string }> {
+  async login(
+    email: string,
+    password: string
+  ): Promise<{ user: HubUser; sessionToken: string; expiresAt: string }> {
     const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail) {
-      throw new Error("E-mail je povinný.");
+    if (!normalizedEmail || !password) {
+      throw new AuthError(400, "missing_fields", "E-mail i heslo jsou povinné.");
     }
 
-    const name = normalizedEmail.split("@")[0] || normalizedEmail;
-    const userId = "user_" + sha256(normalizedEmail).slice(0, 24);
-
-    // První přihlášení = vytvoření user řádku. Návratová `xmax` = 0 signalizuje INSERT,
-    // > 0 znamená, že došlo k UPDATE (uživatel už existoval).
-    const userResult = await this.pool.query<UserRow & { xmax: string }>(
-      `
-        INSERT INTO hub_users (id, email, name, default_team_id)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (email)
-        DO UPDATE SET name = EXCLUDED.name
-        RETURNING id, email, name, default_team_id, xmax::text
-      `,
-      [userId, normalizedEmail, name, this.teamId]
+    const result = await this.pool.query<UserRow>(
+      `SELECT id, email, name, default_team_id, password_hash FROM hub_users WHERE email = $1`,
+      [normalizedEmail]
     );
 
-    const isNewUser = userResult.rows[0].xmax === "0";
+    const user = result.rows[0];
+    // Generic message pro user-not-found i špatné heslo — nedovolíme útočníkovi
+    // zjistit, který e-mail v systému existuje (user enumeration).
+    if (!user || !user.password_hash || !verifyPassword(password, user.password_hash)) {
+      throw new AuthError(401, "invalid_credentials", "Nesprávný e-mail nebo heslo.");
+    }
 
-    // Při prvním přihlášení vytvoříme členství. Pokud admin později uživatele
-    // odebere (`removeMember`), další login už členství nevytvoří automaticky.
-    if (isNewUser) {
+    return this.createSession(user);
+  }
+
+  async register(
+    email: string,
+    password: string,
+    registryCode: string
+  ): Promise<{ user: HubUser; sessionToken: string; expiresAt: string }> {
+    const expectedCode = (process.env.CLAUDE_HUB_REGISTRY_CODE ?? "").trim();
+    if (!expectedCode) {
+      throw new AuthError(503, "registration_disabled", "Registrace není nakonfigurovaná. Kontaktujte správce.");
+    }
+
+    if (!password || password.length < 8) {
+      throw new AuthError(400, "weak_password", "Heslo musí mít alespoň 8 znaků.");
+    }
+
+    if (!registryCode || registryCode.trim() !== expectedCode) {
+      throw new AuthError(403, "invalid_registry_code", "Neplatný registrační kód.");
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+      throw new AuthError(400, "missing_email", "E-mail je povinný.");
+    }
+
+    const allowed = getAllowedEmails();
+    if (allowed.length > 0 && !allowed.includes(normalizedEmail)) {
+      throw new AuthError(403, "email_not_allowed", "Tento e-mail nemá přístup k hubu.");
+    }
+
+    const passwordHash = hashPassword(password);
+    const name = normalizedEmail.split("@")[0] || normalizedEmail;
+
+    const existing = await this.pool.query<UserRow>(
+      `SELECT id, email, name, default_team_id, password_hash FROM hub_users WHERE email = $1`,
+      [normalizedEmail]
+    );
+
+    let user: UserRow;
+
+    if (existing.rows.length > 0) {
+      const row = existing.rows[0];
+      if (row.password_hash) {
+        // Účet existuje a má nastavené heslo — žádné přepisování.
+        throw new AuthError(409, "user_exists", "Účet s tímto e-mailem už existuje. Zkuste se přihlásit.");
+      }
+      // Claim flow: starý účet z passwordless éry, nastav mu heslo.
+      const update = await this.pool.query<UserRow>(
+        `
+          UPDATE hub_users
+          SET password_hash = $1, name = $2
+          WHERE id = $3
+          RETURNING id, email, name, default_team_id, password_hash
+        `,
+        [passwordHash, name, row.id]
+      );
+      user = update.rows[0];
+    } else {
+      const userId = "user_" + sha256(normalizedEmail).slice(0, 24);
+      const insert = await this.pool.query<UserRow>(
+        `
+          INSERT INTO hub_users (id, email, name, default_team_id, password_hash)
+          VALUES ($1, $2, $3, $4, $5)
+          RETURNING id, email, name, default_team_id, password_hash
+        `,
+        [userId, normalizedEmail, name, this.teamId, passwordHash]
+      );
+      user = insert.rows[0];
+
       const memberCount = await this.pool.query<{ count: string }>(
         `SELECT count(*)::text FROM team_members WHERE team_id = $1`,
         [this.teamId]
@@ -418,22 +502,25 @@ export class RegistryRepository {
           VALUES ($1, $2, $3)
           ON CONFLICT (team_id, user_id) DO NOTHING
         `,
-        [this.teamId, userResult.rows[0].id, role]
+        [this.teamId, user.id, role]
       );
     }
 
+    return this.createSession(user);
+  }
+
+  private async createSession(
+    user: UserRow
+  ): Promise<{ user: HubUser; sessionToken: string; expiresAt: string }> {
     const sessionToken = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     await this.pool.query(
-      `
-        INSERT INTO hub_sessions (token_hash, user_id, expires_at)
-        VALUES ($1, $2, $3)
-      `,
-      [sha256(sessionToken), userResult.rows[0].id, expiresAt]
+      `INSERT INTO hub_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+      [sha256(sessionToken), user.id, expiresAt]
     );
 
     return {
-      user: toHubUser(userResult.rows[0]),
+      user: toHubUser(user),
       sessionToken,
       expiresAt
     };
@@ -1068,6 +1155,41 @@ function normalizeEmail(email: string) {
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+// scrypt s 16B saltem a 64B hashem. Výstup ve formátu `salt:hash` (oba hex).
+const SCRYPT_KEYLEN = 64;
+const SCRYPT_SALT_BYTES = 16;
+
+function hashPassword(plain: string): string {
+  const salt = randomBytes(SCRYPT_SALT_BYTES);
+  const hash = scryptSync(plain, salt, SCRYPT_KEYLEN);
+  return `${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+function verifyPassword(plain: string, stored: string): boolean {
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, "hex");
+  const expected = Buffer.from(hashHex, "hex");
+  if (expected.length !== SCRYPT_KEYLEN) return false;
+  const actual = scryptSync(plain, salt, SCRYPT_KEYLEN);
+  // Constant-time compare — nedovolíme útočníkovi timing-attack na hash byty.
+  return timingSafeEqual(expected, actual);
+}
+
+/**
+ * Načte allowlist e-mailů z CLAUDE_HUB_ALLOWED_EMAILS (oddělené čárkou nebo
+ * mezerou). Prázdné = nepoužívá se (kdokoli, kdo zná registry code, se může
+ * zaregistrovat). Pro ostrý provoz vždy nastavte.
+ */
+function getAllowedEmails(): string[] {
+  const raw = (process.env.CLAUDE_HUB_ALLOWED_EMAILS ?? "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,\s]+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function toHubUser(row: UserRow): HubUser {
