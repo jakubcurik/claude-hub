@@ -6,13 +6,10 @@ version: 2
 
 project_name: claude-hub-daemon
 
-before:
-  hooks:
-    - go mod tidy -modfile=apps/daemon/go.mod
-
 builds:
   - id: claude-hub-daemon
-    main: ./apps/daemon/cmd/claude-hub-daemon
+    main: ./cmd/claude-hub-daemon
+    dir: apps/daemon
     binary: claude-hub-daemon
     env:
       - CGO_ENABLED=0
@@ -26,17 +23,16 @@ builds:
 
 archives:
   - id: default
-    builds: [claude-hub-daemon]
-    format: tar.gz
+    ids: [claude-hub-daemon]
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     # Bez verze v názvu — díky tomu funguje stabilní URL
     # https://github.com/<owner>/<repo>/releases/latest/download/claude-hub-daemon_<os>_<arch>.<ext>
     # napříč releasy. Verze je uložená v binárce přes ldflag `main.version`.
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - LICENSE*
       - README.md
       - CHANGELOG.md
 
@@ -45,7 +41,7 @@ checksum:
   algorithm: sha256
 
 snapshot:
-  name_template: "{{ .Tag }}-snapshot-{{ .ShortCommit }}"
+  version_template: "{{ .Tag }}-snapshot-{{ .ShortCommit }}"
 
 changelog:
   use: github
