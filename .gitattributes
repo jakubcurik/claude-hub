@@ -5,3 +5,9 @@
 
 # PowerShell ma rad CRLF, ale stejne funguje LF. Drzme se UTF-8 LF napric repem.
 *.ps1       text eol=crlf
+
+# Fonty - binarni, zadne line-ending konverze
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary

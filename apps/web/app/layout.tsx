@@ -1,18 +1,16 @@
 import type { Metadata } from "next";
-import { DM_Sans, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ["latin", "latin-ext"],
-  variable: "--font-display",
-  weight: ["400", "500", "600", "700"],
-  display: "swap"
-});
-
-const dmSans = DM_Sans({
-  subsets: ["latin", "latin-ext"],
-  variable: "--font-body",
-  weight: ["400", "500", "700"],
+// Inter Variable — self-hosted z apps/web/app/fonts/. Žádná závislost na Google Fonts
+// při buildu (NAS / restriktivní sítě by jinak mohly stahování zablokovat a font
+// by spadl na serif fallback).
+const inter = localFont({
+  src: [
+    { path: "./fonts/InterVariable.woff2", style: "normal", weight: "100 900" },
+    { path: "./fonts/InterVariable-Italic.woff2", style: "italic", weight: "100 900" }
+  ],
+  variable: "--font-sans",
   display: "swap"
 });
 
@@ -29,7 +27,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="cs" className={`${spaceGrotesk.variable} ${dmSans.variable}`}>
+    <html lang="cs" className={inter.variable}>
       <body>{children}</body>
     </html>
   );
