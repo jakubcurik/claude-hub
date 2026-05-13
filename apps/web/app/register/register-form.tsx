@@ -15,7 +15,7 @@ export function RegisterForm() {
         autoComplete="email"
         id="email"
         name="email"
-        placeholder="jmeno@example.com"
+        placeholder="jmeno@animato.cz"
         required
         type="email"
       />
@@ -28,15 +28,6 @@ export function RegisterForm() {
         placeholder="••••••••"
         required
         type="password"
-      />
-      <label htmlFor="registryCode">Registrační kód</label>
-      <input
-        autoComplete="off"
-        id="registryCode"
-        name="registryCode"
-        placeholder="Kód, který vám předal správce"
-        required
-        type="text"
       />
       {state.error ? <p className="login-error">{state.error}</p> : null}
       <button className="primary" disabled={pending} type="submit">

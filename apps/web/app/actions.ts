@@ -104,9 +104,8 @@ export async function loginAction(_prev: AuthFormState, formData: FormData): Pro
 export async function registerAction(_prev: AuthFormState, formData: FormData): Promise<AuthFormState> {
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
-  const registryCode = String(formData.get("registryCode") ?? "");
   try {
-    await registerWithEmail(email, password, registryCode);
+    await registerWithEmail(email, password);
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Registrace se nezdařila." };
   }

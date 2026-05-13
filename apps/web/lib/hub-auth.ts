@@ -63,8 +63,8 @@ export async function loginWithEmail(email: string, password: string) {
   return submitAuth("/v1/auth/login", { email, password });
 }
 
-export async function registerWithEmail(email: string, password: string, registryCode: string) {
-  return submitAuth("/v1/auth/register", { email, password, registryCode });
+export async function registerWithEmail(email: string, password: string) {
+  return submitAuth("/v1/auth/register", { email, password });
 }
 
 async function submitAuth(path: string, body: Record<string, string>) {

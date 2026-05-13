@@ -426,20 +426,10 @@ export class RegistryRepository {
 
   async register(
     email: string,
-    password: string,
-    registryCode: string
+    password: string
   ): Promise<{ user: HubUser; sessionToken: string; expiresAt: string }> {
-    const expectedCode = (process.env.CLAUDE_HUB_REGISTRY_CODE ?? "").trim();
-    if (!expectedCode) {
-      throw new AuthError(503, "registration_disabled", "Registrace není nakonfigurovaná. Kontaktujte správce.");
-    }
-
     if (!password || password.length < 8) {
       throw new AuthError(400, "weak_password", "Heslo musí mít alespoň 8 znaků.");
-    }
-
-    if (!registryCode || registryCode.trim() !== expectedCode) {
-      throw new AuthError(403, "invalid_registry_code", "Neplatný registrační kód.");
     }
 
     const normalizedEmail = normalizeEmail(email);
@@ -447,8 +437,14 @@ export class RegistryRepository {
       throw new AuthError(400, "missing_email", "E-mail je povinný.");
     }
 
-    const allowed = getAllowedEmails();
-    if (allowed.length > 0 && !allowed.includes(normalizedEmail)) {
+    const allowed = getAllowedEmailEntries();
+    if (allowed.length === 0) {
+      // Bez allowlistu by se mohl zaregistrovat kdokoli — to je pro veřejně
+      // dostupný hub nebezpečné. Admin musí nastavit alespoň povolenou doménu.
+      throw new AuthError(503, "registration_disabled", "Registrace není nakonfigurovaná. Kontaktujte správce.");
+    }
+
+    if (!isEmailAllowed(normalizedEmail, allowed)) {
       throw new AuthError(403, "email_not_allowed", "Tento e-mail nemá přístup k hubu.");
     }
 
@@ -1179,17 +1175,26 @@ function verifyPassword(plain: string, stored: string): boolean {
 }
 
 /**
- * Načte allowlist e-mailů z CLAUDE_HUB_ALLOWED_EMAILS (oddělené čárkou nebo
- * mezerou). Prázdné = nepoužívá se (kdokoli, kdo zná registry code, se může
- * zaregistrovat). Pro ostrý provoz vždy nastavte.
+ * Načte allowlist z CLAUDE_HUB_ALLOWED_EMAILS (oddělené čárkou nebo mezerou).
+ * Položka může být buď konkrétní e-mail (obsahuje `@`) nebo doména
+ * (`animato.cz` → projde každý `*@animato.cz`). Prázdné = registrace zakázaná.
  */
-function getAllowedEmails(): string[] {
+function getAllowedEmailEntries(): string[] {
   const raw = (process.env.CLAUDE_HUB_ALLOWED_EMAILS ?? "").trim();
   if (!raw) return [];
   return raw
     .split(/[,\s]+/)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function isEmailAllowed(email: string, entries: string[]): boolean {
+  return entries.some((entry) => {
+    if (entry.includes("@")) {
+      return entry === email;
+    }
+    return email.endsWith("@" + entry);
+  });
 }
 
 function toHubUser(row: UserRow): HubUser {

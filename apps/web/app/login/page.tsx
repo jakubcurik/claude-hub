@@ -21,7 +21,7 @@ export default async function LoginPage() {
         </div>
         <LoginForm />
         <p className="login-footnote">
-          Nemáte ještě účet? <Link href="/register">Registrace s kódem</Link>
+          Nemáte ještě účet? <Link href="/register">Registrace</Link>
         </p>
       </section>
     </main>

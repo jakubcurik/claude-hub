@@ -249,34 +249,27 @@ export async function registerRoutes(
   );
 
   app.post<{
-    Body: { email: string; password: string; registryCode: string };
+    Body: { email: string; password: string };
   }>(
     "/v1/auth/register",
     {
       config: {
-        // Přísnější limit než login — útoky na guess registry code by nemělo
-        // jít dělat brute-force.
         rateLimit: { max: 5, timeWindow: "1 minute" }
       },
       schema: {
         body: {
           type: "object",
-          required: ["email", "password", "registryCode"],
+          required: ["email", "password"],
           properties: {
             email: { type: "string", minLength: 3, format: "email" },
-            password: { type: "string", minLength: 8 },
-            registryCode: { type: "string", minLength: 1 }
+            password: { type: "string", minLength: 8 }
           }
         }
       }
     },
     async (request, reply) => {
       try {
-        return await repository.register(
-          request.body.email,
-          request.body.password,
-          request.body.registryCode
-        );
+        return await repository.register(request.body.email, request.body.password);
       } catch (error) {
         if (error instanceof AuthError) {
           return sendError(reply, error.status, error.code, error.message);
