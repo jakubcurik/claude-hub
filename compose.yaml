@@ -53,7 +53,14 @@ services:
       api:
         condition: service_healthy
     environment:
+      # Server-side fetch z Next.js (login, hub-auth, ...) sahá rovnou na
+      # interní Docker DNS, žádná veřejná URL nepotřebuje.
       CLAUDE_HUB_API_URL: http://api:8787
+      # URL, kterou daemon na uživatelově počítači použije pro forwarding
+      # OTLP telemetrie. Musí být veřejně dostupná — Next.js rewrite v
+      # next.config.mjs proxuje `/api/...` na interní `api:8787`, takže
+      # stačí stejná doména jako hub web. Pro jiný deploy přepiš v .env.
+      CLAUDE_HUB_PUBLIC_API_URL: ${CLAUDE_HUB_PUBLIC_API_URL:-https://hub.animato-lab.cz/api}
       CLAUDE_HUB_PUBLIC_URL: ${CLAUDE_HUB_PUBLIC_URL:-https://hub.animato-lab.cz}
       CLAUDE_HUB_TEAM_ID: ${CLAUDE_HUB_TEAM_ID:-main}
       CLAUDE_HUB_TEAM_NAME: ${CLAUDE_HUB_TEAM_NAME:-Tým}
