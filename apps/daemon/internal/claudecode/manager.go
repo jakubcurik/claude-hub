@@ -2194,16 +2194,11 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 		}
 	}
 
-	matchedLocalAsset, hasLocalMatch := localIndex[assetIdentityKey(asset.Type, asset.Slug)]
-	if !anyInstalled && hasLocalMatch {
-		anyInstalled = true
-		anyEnabled = true
-	}
-
 	// Plugin recipe může být lokálně nainstalovaný bez Hub manifestu — uživatel
 	// si plugin přidal přes `/plugin marketplace add ...` v Claude Code. V tom
 	// případě čteme stav přímo z installed_plugins.json + settings.json
-	// (enabledPlugins flag).
+	// (enabledPlugins flag) — to je přesnější než generický localIndex fallback,
+	// proto musí běžet PŘED ním.
 	if asset.Type == AssetTypePlugin && !anyInstalled {
 		if pluginKey := m.findPluginKeyBySlug(asset.Slug); pluginKey != "" {
 			anyInstalled = true
@@ -2215,6 +2210,15 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 				ManagedByHub: false,
 			})
 		}
+	}
+
+	// Generic localIndex fallback pro všechny ostatní typy (skill, command,
+	// mcp, hook, config). Pokud lokálně položku najdeme bez Hub manifestu,
+	// zobrazíme ji jako Zapnutou (přítomnost souboru = enabled).
+	matchedLocalAsset, hasLocalMatch := localIndex[assetIdentityKey(asset.Type, asset.Slug)]
+	if !anyInstalled && hasLocalMatch {
+		anyInstalled = true
+		anyEnabled = true
 	}
 
 	state := "not_installed"
@@ -2283,11 +2287,17 @@ func (m *Manager) localInstalledIndex() (map[string]LocalAsset, error) {
 		return nil, err
 	}
 
+	// localIndex obsahuje VŠECHNY typy lokálně detekovaných položek
+	// (skill, command, mcp, hook, plugin, config). assetState ho používá
+	// jako fallback: pokud nemá Hub manifest, ale položka je lokálně
+	// přítomná, katalog ji ukáže jako "Zapnuto" místo "Nenainstalováno".
+	//
+	// Pro plugin existuje navíc specifický fallback (findPluginKeyBySlug +
+	// isPluginEnabledInSettings) v assetState, který běží PŘED localIndex
+	// kontrolou — tam čteme skutečný enabled stav ze settings.json
+	// místo hardcoded enabled=true.
 	index := make(map[string]LocalAsset, len(assets))
 	for _, asset := range assets {
-		if asset.Type != AssetTypeSkill && asset.Type != AssetTypeCommand {
-			continue
-		}
 		key := assetIdentityKey(asset.Type, asset.Slug)
 		if _, exists := index[key]; exists {
 			continue
