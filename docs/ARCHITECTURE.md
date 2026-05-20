@@ -115,10 +115,25 @@ Definované v `packages/schema/src/index.ts` a `apps/daemon/internal/claudecode/
 | `command` | `~/.claude/commands/<slug>.md`                    | `<project>/.claude/commands/<slug>.md`            | ✅                |
 | `hook`    | `~/.claude/hooks/*` a sekce `hooks` v `settings.json` | `<project>/.claude/hooks/*` + `settings.json` | jen export        |
 | `mcp`     | `~/.claude/.mcp.json`                             | `<project>/.claude/.mcp.json`, `<project>/.mcp.json` | jen export        |
-| `plugin`  | `~/.claude/plugins/installed_plugins.json`        | `<project>/.claude/plugins/*`                     | jen export        |
+| `plugin`  | **recipe = marketplace pointer** (viz níže)       | `<project>/.claude/plugins/*`                     | ✅                |
 | `config`  | obecné konfigurační soubory                       | totéž                                             | zatím ne          |
 
-Pro typy `mcp`, `hook`, `plugin`, `config` daemon vrací `state: "unsupported"` u `LocalAssetState` (instalovat zatím neumí), ale dokáže je **detekovat a exportovat**, aby je tým mohl ručně sdílet a uvidět v UI.
+Pro typy `mcp`, `hook`, `config` daemon vrací `state: "unsupported"` u `LocalAssetState` (instalovat zatím neumí), ale dokáže je **detekovat a exportovat**, aby je tým mohl ručně sdílet a uvidět v UI.
+
+### Plugin recipe model
+
+Pluginy se v Claude Hubu **nesdílí jako file bundle**. Místo toho asset typu `plugin` obsahuje jediný soubor `recipe.json` s tvarem [`PluginRecipe`](../packages/schema/src/index.ts) — popis, **odkud** plugin stáhnout (marketplace `source`), **jak** se jmenuje (`pluginName`) a volitelně **co předvyplnit** (`defaultOptions` jen pro non-sensitive hodnoty).
+
+Při install daemon:
+
+1. Klonuje marketplace repo do `~/.claude/plugins/marketplaces/<marketplaceName>/` přes systémový `git` binárka (auth ladder: SSH/glab/gh → fallback OS keychain PAT přes `GIT_ASKPASS`).
+2. Patchuje `~/.claude/settings.json`: přidá entry do `extraKnownMarketplaces`, `enabledPlugins` (= true) a (volitelně) `pluginConfigs.<plugin>@<marketplace>.options`.
+3. Patchuje `~/.claude/plugins/installed_plugins.json` (Claude Code se podle něj orientuje).
+4. Uloží Hub manifest s `RecipePayload` + snapshots přepsaných sekcí pro rollback.
+
+Tím se obchází Claude Code 2.0.67+ bug (`git clone -c credential.helper=` blokuje všechny credential helpery — viz [#13798](https://github.com/anthropics/claude-code/issues/13798)). Sensitive credentials (OAuth refresh tokeny apod.) se nikdy přes Hub nepřenášejí — uživatel si je získá přes existující setup skill pluginu (např. `/animato-mcp:setup`).
+
+Auto-update řeší daemon-side scheduler (denní `git pull --ff-only` přes auth ladder) pro recipes s `autoUpdate=true`.
 
 ## Lokální úložiště daemonu
 

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/claudecode"
+	"github.com/claude-hub/claude-hub/apps/daemon/internal/gitauth"
+	"github.com/claude-hub/claude-hub/apps/daemon/internal/scheduler"
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/server"
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/telemetry"
 )
@@ -35,6 +37,17 @@ func main() {
 	}
 
 	manager := claudecode.NewManager(claudeHome)
+
+	// GitAuth — detekce git binárky a injekce auth ladderu pro plugin recipe
+	// install/update. Pokud git chybí, daemon dál běží — jen plugin recipe
+	// install vrátí čitelnou chybu.
+	if runner, err := gitauth.NewRunner(logger); err != nil {
+		logger.Warn("git binárka nenalezena — plugin recipe install nebude fungovat", "error", err)
+	} else {
+		logger.Info("git nalezen", "path", runner.GitPath)
+		manager.GitAuth = gitauth.NewLadder(runner, logger)
+	}
+
 	token, tokenPath, err := manager.Token()
 	if err != nil {
 		logger.Error("failed to create pairing token", "error", err)
@@ -82,6 +95,13 @@ func main() {
 	ctx, cancelForwarder := context.WithCancel(context.Background())
 	go forwarder.Run(ctx)
 
+	// Plugin recipe auto-update scheduler.
+	schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
+	if manager.GitAuth != nil {
+		recipeScheduler := scheduler.New(manager, logger)
+		go recipeScheduler.Run(schedulerCtx)
+	}
+
 	go func() {
 		logger.Info("Claude Hub daemon listening", "address", "http://"+address)
 		logger.Info("Claude home", "path", claudeHome)
@@ -105,6 +125,7 @@ func main() {
 	<-stop
 
 	cancelForwarder()
+	cancelScheduler()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

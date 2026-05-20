@@ -52,6 +52,36 @@ export interface CatalogAsset {
   contentHash?: string;
 }
 
+export type MarketplaceSource =
+  | { source: "github"; repo: string; ref?: string; sha?: string }
+  | { source: "url"; url: string; ref?: string; sha?: string }
+  | {
+      source: "git-subdir";
+      url: string;
+      path: string;
+      ref?: string;
+      sha?: string;
+    }
+  | {
+      source: "npm";
+      package: string;
+      version?: string;
+      registry?: string;
+    };
+
+export type PluginRecipeOptionValue = string | number | boolean;
+
+export interface PluginRecipe {
+  marketplaceName: string;
+  marketplaceSource: MarketplaceSource;
+  pluginName: string;
+  defaultOptions?: Record<string, PluginRecipeOptionValue>;
+  autoUpdate?: boolean;
+  setupCommand?: string;
+}
+
+export const PLUGIN_RECIPE_FILE_PATH = "recipe.json";
+
 export interface PairedDevice {
   tokenHash: string;
   label: string;

@@ -86,6 +86,82 @@ export async function publishLocalAssetToCatalog(
   return payload.asset;
 }
 
+/**
+ * Publikuje plugin recipe (marketplace pointer) do katalogu. Na rozdíl od
+ * publishLocalAssetToCatalog se nepoužívá export lokálního assetu — recipe
+ * sestaví uživatel přes formulář (marketplace URL + plugin name).
+ */
+export async function publishPluginRecipe(input: {
+  slug: string;
+  name: string;
+  summary: string;
+  description?: string;
+  version: string;
+  risk: CatalogAsset["risk"];
+  recipe: {
+    marketplaceName: string;
+    marketplaceSource: Record<string, unknown>;
+    pluginName: string;
+    defaultOptions?: Record<string, string | number | boolean>;
+    autoUpdate?: boolean;
+    setupCommand?: string;
+  };
+}): Promise<CatalogAsset> {
+  const user = await getCurrentUser();
+  const token = await getSessionToken();
+  if (!user || !token) {
+    throw new Error("Nejdřív se přihlaste, aby bylo možné nahrát plugin recipe do katalogu.");
+  }
+  const teamId = hubTeamId();
+
+  const asset: CatalogAsset = {
+    id: `plugin:${input.slug}`,
+    type: "plugin",
+    slug: input.slug,
+    name: input.name,
+    summary: input.summary,
+    description: input.description || "",
+    owner: { id: user.id, name: user.email },
+    version: input.version,
+    risk: input.risk,
+    tags: ["plugin-recipe"],
+    usedBy: 0,
+    updatedAt: new Date().toISOString(),
+    compatibility: {
+      platforms: ["darwin", "linux", "windows"]
+    },
+    permissions: [],
+    requiredEnv: [],
+    files: [
+      {
+        path: "recipe.json",
+        content: JSON.stringify(input.recipe, null, 2)
+      }
+    ]
+  };
+
+  const response = await fetch(`${hubApiUrl()}/v1/teams/${teamId}/catalog`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ asset })
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as Partial<CatalogPublishResponse> & {
+    message?: string;
+    error?: string;
+  };
+
+  if (!response.ok || !payload.asset) {
+    throw new Error(payload.message || payload.error || "Plugin recipe se nepodařilo nahrát.");
+  }
+
+  revalidatePath("/");
+  return payload.asset;
+}
+
 export interface AuthFormState {
   error?: string;
 }

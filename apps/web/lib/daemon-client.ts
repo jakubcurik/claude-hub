@@ -13,6 +13,23 @@ import type {
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:17373";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+// DaemonError nese strukturované chyby z daemonu (např. "git_auth_required").
+// UI je odlišuje od běžných Error: PAT prompt modal se otevírá jen pro
+// git_auth_required, ostatní zobrazí toast s message.
+export class DaemonError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly details?: Record<string, unknown>;
+
+  constructor(message: string, code: string, status: number, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "DaemonError";
+    this.code = code;
+    this.status = status;
+    this.details = details;
+  }
+}
+
 export class DaemonClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -104,12 +121,32 @@ export class DaemonClient {
     return this.request<TelemetryDaemonStatus>("/v1/telemetry/status");
   }
 
+  async savePluginCredentials(host: string, token: string): Promise<void> {
+    await this.request("/v1/plugin/credentials", {
+      method: "POST",
+      body: { host, token }
+    });
+  }
+
+  async deletePluginCredentials(host: string): Promise<void> {
+    await this.request(`/v1/plugin/credentials/${encodeURIComponent(host)}`, {
+      method: "DELETE"
+    });
+  }
+
+  async hasPluginCredentials(host: string): Promise<boolean> {
+    const response = await this.request<{ host: string; stored: boolean }>(
+      `/v1/plugin/credentials/${encodeURIComponent(host)}`
+    );
+    return response.stored;
+  }
+
   private async request<T>(
     path: string,
     options: {
       auth?: boolean;
       body?: unknown;
-      method?: "GET" | "POST";
+      method?: "GET" | "POST" | "DELETE";
       timeoutMs?: number;
     } = {}
   ): Promise<T> {
@@ -139,10 +176,17 @@ export class DaemonClient {
     const payload = (await response.json().catch(() => ({}))) as {
       message?: string;
       error?: string;
+      code?: string;
+      details?: Record<string, unknown>;
     };
 
     if (!response.ok) {
-      throw new Error(payload.message || payload.error || "Požadavek na lokální službu selhal.");
+      throw new DaemonError(
+        payload.message || payload.error || "Požadavek na lokální službu selhal.",
+        payload.code || "unknown_error",
+        response.status,
+        payload.details
+      );
     }
 
     return payload as T;

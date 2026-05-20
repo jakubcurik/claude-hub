@@ -162,4 +162,8 @@ type manifest struct {
 	HookEventEntries map[string][]int  `json:"hookEventEntries,omitempty"` // event → indexy v poli hooků
 	PluginEntries    []string          `json:"pluginEntries,omitempty"`     // "scope:projectPath" identifikace
 	ContentSnapshots map[string]string `json:"contentSnapshots,omitempty"`  // path → sha256 obsahu, ke kterému patří manifest
+
+	// RecipePayload je JSON-serializovaný PluginRecipe (jen pro AssetTypePlugin).
+	// Scheduler ho čte při auto-update, aby věděl marketplace URL a autoUpdate flag.
+	RecipePayload string `json:"recipePayload,omitempty"`
 }

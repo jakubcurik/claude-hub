@@ -4,6 +4,7 @@ import type { CatalogAsset } from "@claude-hub/schema";
 import { AuthError, computeContentHash, type RegistryRepository, type HubUser } from "./repository.js";
 import { TelemetryRepository } from "./telemetry-repository.js";
 import { registerTelemetryRoutes } from "./telemetry-routes.js";
+import { validatePluginRecipePayload } from "./plugin-recipe.js";
 
 const assetTypes = ["skill", "command", "mcp", "hook", "plugin", "config"] as const;
 const riskLevels = ["low", "medium", "high", "restricted"] as const;
@@ -422,6 +423,12 @@ export async function registerRoutes(
         ...request.body.asset,
         owner: { id: user.id, name: user.email }
       };
+
+      // Plugin recipe validace (cross-field, JSON Schema to neumí vyjádřit).
+      const recipeError = validatePluginRecipePayload(incomingAsset);
+      if (recipeError) {
+        return sendError(reply, 422, "invalid_recipe", `${recipeError.field}: ${recipeError.message}`);
+      }
 
       let signatureRecord: { signature: string; signedBy: string } | undefined;
       if (request.body.signature) {

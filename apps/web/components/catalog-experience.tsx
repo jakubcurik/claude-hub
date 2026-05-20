@@ -29,10 +29,12 @@ import type {
   KnownProject,
   LocalAsset,
   LocalAssetState,
+  PluginRecipe,
   SigningKey,
   TeamMembership,
   TelemetryUserSettingRow
 } from "@claude-hub/schema";
+import { DaemonError } from "@/lib/daemon-client";
 import {
   deleteCollection,
   generateAndRegisterSigningKey,
@@ -46,6 +48,7 @@ import {
   updateMemberRole
 } from "@/app/actions";
 import { AppSidebar, type SidebarNavItem, type SidebarView } from "@/components/app-sidebar";
+import { PluginRecipeForm } from "@/components/plugin-recipe-form";
 import { useDaemon } from "@/lib/daemon-context";
 import { OwnerSettings } from "@/components/analytics/owner-settings";
 
@@ -193,6 +196,13 @@ export function CatalogExperience({
   const [states, setStates] = useState<Record<string, LocalAssetState>>({});
   const [localAssets, setLocalAssets] = useState<LocalAsset[]>([]);
   const [modal, setModal] = useState<ModalState | null>(null);
+  const [credentialsPrompt, setCredentialsPrompt] = useState<{
+    host: string;
+    retry: () => Promise<void>;
+    submitting?: boolean;
+    errorMessage?: string;
+  } | null>(null);
+  const [pluginRecipeFormOpen, setPluginRecipeFormOpen] = useState(false);
   const [operationBusy, setOperationBusy] = useState(false);
   const setBusy = setOperationBusy;
   const lastFetchedConnectionVersion = useRef(0);
@@ -328,19 +338,87 @@ export function CatalogExperience({
         warnings: preview.warnings,
         requiredEnv: preview.requiredEnv,
         onConfirm: async () => {
-          await client.install(asset, options);
-          setModal(null);
-          await refresh();
-          showToast(`Nainstalováno: ${asset.name} (${scopeLabel}).`);
-          void logCatalogEvent({
-            event: states[asset.id]?.installed ? "update" : "install",
-            assetId: asset.id,
-            assetVersion: asset.version
-          });
+          await runInstallWithAuthRetry(asset, options, scopeLabel);
         }
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Náhled instalace selhal.");
+    }
+  }
+
+  // runInstallWithAuthRetry zaobalí install call: pro git_auth_required otevře
+  // PAT prompt modal a po jeho uzavření zkusí install znovu. Pro úspěch zobrazí
+  // toast a (u plugin recipe) banner s setupCommand.
+  async function runInstallWithAuthRetry(
+    asset: CatalogAsset,
+    options: InstallOptions,
+    scopeLabel: string
+  ): Promise<void> {
+    const performInstall = async () => {
+      try {
+        await client.install(asset, options);
+        setModal(null);
+        setCredentialsPrompt(null);
+        await refresh();
+        const setupCommand = pluginRecipeSetupCommand(asset);
+        if (setupCommand) {
+          showToast(`Nainstalováno: ${asset.name}. Pro dokončení spusť v Claude Code: ${setupCommand}`);
+        } else {
+          showToast(`Nainstalováno: ${asset.name} (${scopeLabel}).`);
+        }
+        void logCatalogEvent({
+          event: states[asset.id]?.installed ? "update" : "install",
+          assetId: asset.id,
+          assetVersion: asset.version
+        });
+      } catch (error) {
+        if (error instanceof DaemonError && error.code === "git_auth_required") {
+          const host = typeof error.details?.host === "string" ? error.details.host : "";
+          setCredentialsPrompt({
+            host,
+            retry: performInstall
+          });
+          return;
+        }
+        throw error;
+      }
+    };
+    try {
+      await performInstall();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Instalace selhala.";
+      showToast(message);
+    }
+  }
+
+  // pluginRecipeSetupCommand extrahuje setupCommand z plugin recipe payloadu,
+  // pokud asset je plugin recipe. Vrací prázdný string pro ostatní typy nebo
+  // pokud recipe.setupCommand chybí.
+  function pluginRecipeSetupCommand(asset: CatalogAsset): string {
+    if (asset.type !== "plugin" || asset.files.length === 0) {
+      return "";
+    }
+    try {
+      const recipe = JSON.parse(asset.files[0].content) as PluginRecipe;
+      return recipe.setupCommand || "";
+    } catch {
+      return "";
+    }
+  }
+
+  // submitCredentialsPrompt uloží PAT do daemon keychainu a zavolá retry.
+  async function submitCredentialsPrompt(token: string) {
+    if (!credentialsPrompt) return;
+    setCredentialsPrompt((prev) => (prev ? { ...prev, submitting: true, errorMessage: undefined } : prev));
+    try {
+      await client.savePluginCredentials(credentialsPrompt.host, token);
+      const retry = credentialsPrompt.retry;
+      setCredentialsPrompt(null);
+      await retry();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Uložení PAT selhalo.";
+      setCredentialsPrompt((prev) => (prev ? { ...prev, submitting: false, errorMessage: message } : prev));
     }
   }
 
@@ -559,6 +637,15 @@ export function CatalogExperience({
                 ariaLabel="Filtrovat katalog"
                 onChange={setCatalogFilter}
               />
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setPluginRecipeFormOpen(true)}
+                title="Publikuj plugin recipe (marketplace pointer) bez file uploadu"
+              >
+                <PlugZap size={16} />
+                Sdílet plugin
+              </button>
             </div>
 
             <div className={`catalog-grid${busy ? " busy" : ""}`} aria-busy={busy}>
@@ -831,7 +918,97 @@ export function CatalogExperience({
         />
       ) : null}
 
+      {credentialsPrompt ? (
+        <PluginCredentialsModal
+          host={credentialsPrompt.host}
+          submitting={Boolean(credentialsPrompt.submitting)}
+          errorMessage={credentialsPrompt.errorMessage}
+          onCancel={() => setCredentialsPrompt(null)}
+          onSubmit={submitCredentialsPrompt}
+        />
+      ) : null}
+
+      {pluginRecipeFormOpen ? (
+        <PluginRecipeForm
+          onClose={() => setPluginRecipeFormOpen(false)}
+          onPublished={async (asset) => {
+            setPluginRecipeFormOpen(false);
+            await refresh();
+            showToast(`Plugin recipe "${asset.name}" publikováno do katalogu.`);
+          }}
+        />
+      ) : null}
+
       <div className={toast ? "toast visible" : "toast"}>{toast}</div>
+    </div>
+  );
+}
+
+function PluginCredentialsModal({
+  host,
+  submitting,
+  errorMessage,
+  onCancel,
+  onSubmit
+}: {
+  host: string;
+  submitting: boolean;
+  errorMessage?: string;
+  onCancel: () => void;
+  onSubmit: (token: string) => Promise<void>;
+}) {
+  const [token, setToken] = useState("");
+  const displayHost = host || "git server";
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h2>Personal Access Token pro {displayHost}</h2>
+          <button type="button" onClick={onCancel} aria-label="Zavřít">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="modal-body">
+          <p>
+            Klonování privátního marketplace pro <strong>{displayHost}</strong> selhalo na autentizaci.
+            Vlož Personal Access Token se scopem <code>read_repository</code> (GitLab) nebo <code>repo:read</code> (GitHub).
+            Token se uloží do OS keychainu lokálního daemonu a nikam dál se neposílá.
+          </p>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!token.trim() || submitting) return;
+              await onSubmit(token.trim());
+            }}
+          >
+            <label>
+              <span>PAT token</span>
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="glpat_... nebo ghp_..."
+                autoFocus
+                autoComplete="off"
+                required
+              />
+            </label>
+            {errorMessage ? (
+              <p className="error-message" role="alert">
+                {errorMessage}
+              </p>
+            ) : null}
+            <footer>
+              <button type="button" onClick={onCancel} disabled={submitting}>
+                Zrušit
+              </button>
+              <button type="submit" disabled={submitting || !token.trim()}>
+                {submitting ? "Ukládám..." : "Uložit a opakovat install"}
+              </button>
+            </footer>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }

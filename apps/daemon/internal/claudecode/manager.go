@@ -39,8 +39,15 @@ type Manager struct {
 	ClaudeHome string
 	HubHome    string
 
-	locksMu sync.Mutex
-	locks   map[string]*sync.Mutex
+	// GitAuth obsluhuje plugin recipe install/update — klonování marketplace
+	// repos pres systémový git s auth fallback ladderem (Vrstva 1 system creds,
+	// Vrstva 2 PAT z OS keychainu). Nil v testech, které ne testují plugin
+	// recipe lifecycle. Server.go ho injektuje při startu daemonu.
+	GitAuth GitAuthRunner
+
+	locksMu          sync.Mutex
+	locks            map[string]*sync.Mutex
+	marketplaceLocks map[string]*sync.Mutex
 }
 
 // assetLock vrátí mutex unikátní pro daný (type, slug) pár.
@@ -57,6 +64,24 @@ func (m *Manager) assetLock(assetType AssetType, slug string) *sync.Mutex {
 	}
 	lock := &sync.Mutex{}
 	m.locks[key] = lock
+	return lock
+}
+
+// marketplaceLock serializuje git operace na konkrétním marketplace klonu.
+// Bez něj by dva paralelní installs sdílející stejný marketplace mohly do
+// sebe nakročit (jeden klonuje, druhý se snaží pull).
+func (m *Manager) marketplaceLock(marketplaceName string) *sync.Mutex {
+	key := "mp:" + marketplaceName
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+	if m.marketplaceLocks == nil {
+		m.marketplaceLocks = make(map[string]*sync.Mutex)
+	}
+	if lock, ok := m.marketplaceLocks[key]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.marketplaceLocks[key] = lock
 	return lock
 }
 
@@ -340,34 +365,60 @@ func (m *Manager) previewHookInstall(asset CatalogAsset, opts InstallOptions) (I
 }
 
 func (m *Manager) previewPluginInstall(asset CatalogAsset, opts InstallOptions) (InstallPreview, error) {
+	recipe, err := ExtractPluginRecipe(asset)
+	if err != nil {
+		return InstallPreview{}, err
+	}
 	paths := m.pathsForScope(asset, opts)
+	mpDir := marketplaceDirFor(m.ClaudeHome, recipe.MarketplaceName)
 	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+
 	operations := []InstallOperation{
 		{
 			Type:        "backup",
-			Path:        paths.TargetRoot,
-			Description: "Zazálohovat plugin složku (pokud existuje).",
+			Path:        paths.TargetFile,
+			Description: "Zazálohovat settings.json a installed_plugins.json před úpravou.",
 			Risk:        RiskLow,
 		},
 		{
 			Type:        "create",
-			Path:        paths.TargetRoot,
-			Description: "Zapsat soubory pluginu do ~/.claude/plugins/<slug>/.",
+			Path:        mpDir,
+			Description: fmt.Sprintf("Klonovat plugin marketplace %q z původního git zdroje.", recipe.MarketplaceName),
 			Risk:        asset.Risk,
 		},
 		{
 			Type:        "create",
-			Path:        pluginManifestPath,
-			Description: "Aktualizovat installed_plugins.json o nový plugin.",
+			Path:        paths.TargetFile + " :: extraKnownMarketplaces." + recipe.MarketplaceName,
+			Description: "Zaregistrovat marketplace v ~/.claude/settings.json.",
 			Risk:        asset.Risk,
 		},
 		{
-			Type:        "manifest",
-			Path:        paths.Manifest,
-			Description: "Uložit metadata pluginu pro pozdější uninstall.",
-			Risk:        RiskLow,
+			Type:        "create",
+			Path:        paths.TargetFile + " :: enabledPlugins[" + recipe.PluginKey() + "]",
+			Description: fmt.Sprintf("Zapnout plugin %q v Claude Code.", recipe.PluginName),
+			Risk:        asset.Risk,
 		},
 	}
+	if len(recipe.DefaultOptions) > 0 {
+		operations = append(operations, InstallOperation{
+			Type:        "create",
+			Path:        paths.TargetFile + " :: pluginConfigs[" + recipe.PluginKey() + "].options",
+			Description: fmt.Sprintf("Nastavit %d non-sensitive defaultních voleb pluginu.", len(recipe.DefaultOptions)),
+			Risk:        asset.Risk,
+		})
+	}
+	operations = append(operations, InstallOperation{
+		Type:        "create",
+		Path:        pluginManifestPath + " :: plugins[" + recipe.PluginKey() + "]",
+		Description: "Aktualizovat installed_plugins.json o nový plugin.",
+		Risk:        asset.Risk,
+	}, InstallOperation{
+		Type:        "manifest",
+		Path:        paths.Manifest,
+		Description: "Uložit Hub recipe manifest pro pozdější uninstall/update.",
+		Risk:        RiskLow,
+	})
+
 	return InstallPreview{
 		AssetID:     asset.ID,
 		Version:     asset.Version,
@@ -419,7 +470,7 @@ func (m *Manager) Install(asset CatalogAsset, opts InstallOptions) (LocalAssetSt
 	case AssetTypeHook:
 		return m.installHook(asset, opts)
 	case AssetTypePlugin:
-		return m.installPlugin(asset, opts)
+		return m.installPluginRecipe(asset, opts)
 	case AssetTypeConfig:
 		return m.installConfig(asset, opts)
 	}
@@ -628,64 +679,6 @@ func (m *Manager) installConfig(asset CatalogAsset, opts InstallOptions) (LocalA
 	if err := writeJSON(paths.Manifest, record); err != nil {
 		return LocalAssetState{}, err
 	}
-	localIndex, _ := m.localInstalledIndex()
-	return m.assetState(asset, localIndex)
-}
-
-func (m *Manager) installPlugin(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
-	paths := m.pathsForScope(asset, opts)
-	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
-
-	backupPath, err := m.backup(paths, asset)
-	if err != nil {
-		return LocalAssetState{}, err
-	}
-
-	if exists(paths.TargetRoot) {
-		_ = os.RemoveAll(paths.TargetRoot)
-	}
-	if err := writeAssetFiles(paths.TargetRoot, asset); err != nil {
-		return LocalAssetState{}, err
-	}
-
-	// Aktualizace installed_plugins.json
-	doc, err := readPluginDoc(pluginManifestPath)
-	if err != nil {
-		return LocalAssetState{}, err
-	}
-	pluginKey := asset.Slug
-	doc.Plugins[pluginKey] = []installedPluginEntry{
-		{
-			Scope:       "user",
-			ProjectPath: "",
-			InstallPath: paths.TargetRoot,
-			Version:     asset.Version,
-		},
-	}
-	if err := writePluginDoc(pluginManifestPath, doc); err != nil {
-		return LocalAssetState{}, err
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	record := manifest{
-		AssetID:            asset.ID,
-		Type:               asset.Type,
-		Slug:               asset.Slug,
-		Name:               asset.Name,
-		Version:            asset.Version,
-		Enabled:            true,
-		InstalledAt:        now,
-		Fingerprint:        fingerprint(asset),
-		ContentFingerprint: shaText(readText(paths.TargetFile)),
-		BackupPath:         backupPath,
-		PluginEntries:      []string{"user:" + pluginKey},
-		Scope:              opts.Scope,
-		ProjectPath:        opts.ProjectPath,
-	}
-	if err := writeJSON(paths.Manifest, record); err != nil {
-		return LocalAssetState{}, err
-	}
-
 	localIndex, _ := m.localInstalledIndex()
 	return m.assetState(asset, localIndex)
 }
@@ -938,6 +931,9 @@ func (m *Manager) SetEnabled(asset CatalogAsset, enabled bool, opts InstallOptio
 	lock.Lock()
 	defer lock.Unlock()
 
+	if asset.Type == AssetTypePlugin {
+		return m.togglePluginRecipe(asset, opts, enabled)
+	}
 	if asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig {
 		return m.toggleMergeAsset(asset, enabled, opts)
 	}
@@ -1014,7 +1010,7 @@ func (m *Manager) Uninstall(asset CatalogAsset, opts InstallOptions) (LocalAsset
 	case AssetTypeHook:
 		return m.uninstallHook(asset, opts)
 	case AssetTypePlugin:
-		return m.uninstallPlugin(asset, opts)
+		return m.uninstallPluginRecipe(asset, opts)
 	case AssetTypeConfig:
 		return m.uninstallConfig(asset, opts)
 	}
@@ -1137,26 +1133,6 @@ func (m *Manager) uninstallHook(asset CatalogAsset, opts InstallOptions) (LocalA
 	return m.assetState(asset, localIndex)
 }
 
-func (m *Manager) uninstallPlugin(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
-	paths := m.pathsForScope(asset, opts)
-	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
-
-	if _, err := m.backup(paths, asset); err != nil {
-		return LocalAssetState{}, err
-	}
-
-	_ = os.RemoveAll(paths.TargetRoot)
-
-	doc, err := readPluginDoc(pluginManifestPath)
-	if err == nil {
-		delete(doc.Plugins, asset.Slug)
-		_ = writePluginDoc(pluginManifestPath, doc)
-	}
-	_ = os.Remove(paths.Manifest)
-
-	localIndex, _ := m.localInstalledIndex()
-	return m.assetState(asset, localIndex)
-}
 
 func (m *Manager) LocalAssets() ([]LocalAsset, error) {
 	if err := m.EnsureBaseDirs(); err != nil {
@@ -1945,6 +1921,16 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	if asset.Type == AssetTypeSkill && strings.EqualFold(filepath.Base(source), "SKILL.md") {
 		source = filepath.Dir(source)
 	}
+	if asset.Type == AssetTypePlugin {
+		// Pluginy se v Hub modelu nesdílí jako file bundle, ale jako recipe
+		// (marketplace pointer). Pokud má plugin Hub manifest s RecipePayload,
+		// vrátíme ten — round-trip funguje. Bez manifestu (plugin instalovaný
+		// jinak než přes Hub) musí uživatel vyplnit recipe formulář v UI.
+		if recipeJSON := m.recipePayloadFromManifests(asset.Slug); recipeJSON != "" {
+			return []AssetFile{{Path: PluginRecipeFilePath, Content: recipeJSON}}, nil
+		}
+		return nil, errors.New("plugin nelze automaticky sdílet — vytvoř recipe ručně v UI (marketplace URL + plugin name)")
+	}
 	if asset.Type == AssetTypeHook {
 		if filePath, event, index, ok := splitSettingsHookPath(source); ok {
 			doc, err := readHookDoc(filePath)
@@ -2123,7 +2109,11 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 	}
 
 	scopes := m.collectInstalledScopes(asset)
-	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig
+	// Plugin recipe je merge typ — patchuje settings.json a installed_plugins.json,
+	// nemá samostatný TargetFile který by indikoval install. Bez plug-in tady by
+	// `targetExists := exists(settings.json)` lhalo (settings.json existuje i
+	// bez recipe).
+	mergeType := asset.Type == AssetTypeMCP || asset.Type == AssetTypeHook || asset.Type == AssetTypeConfig || asset.Type == AssetTypePlugin
 
 	scopeStates := make([]InstallScopeState, 0, len(scopes))
 	anyInstalled := false
@@ -2351,12 +2341,16 @@ func (m *Manager) pathsForScope(asset CatalogAsset, opts InstallOptions) assetPa
 			Manifest:     manifestPath,
 		}
 	case AssetTypePlugin:
-		root := filepath.Join(base, "plugins", asset.Slug)
+		// Plugin recipe model: Hub neukládá soubory pluginu, ale JSON-patchuje
+		// settings.json. TargetRoot/TargetFile cílí na settings.json (file který
+		// recipe upravuje). DisabledFile drží snapshot enabledPlugins entry pro
+		// případné toggle reverze.
+		target := filepath.Join(base, "settings.json")
 		return assetPaths{
-			TargetRoot:   root,
-			TargetFile:   filepath.Join(root, "plugin.json"),
-			DisabledRoot: filepath.Join(m.HubHome, "disabled", "plugins", stashID),
-			DisabledFile: filepath.Join(m.HubHome, "disabled", "plugins", stashID, "plugin.json"),
+			TargetRoot:   target,
+			TargetFile:   target,
+			DisabledRoot: filepath.Join(m.HubHome, "disabled", "plugins", stashID+".json"),
+			DisabledFile: filepath.Join(m.HubHome, "disabled", "plugins", stashID+".json"),
 			Manifest:     manifestPath,
 		}
 	case AssetTypeConfig:

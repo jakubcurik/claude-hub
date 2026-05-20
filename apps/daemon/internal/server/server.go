@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/claudecode"
+	"github.com/claude-hub/claude-hub/apps/daemon/internal/gitauth"
 	"github.com/claude-hub/claude-hub/apps/daemon/internal/telemetry"
 )
 
@@ -80,6 +82,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/telemetry/enable", s.withAuth(s.handleTelemetryEnable))
 	s.mux.HandleFunc("POST /v1/telemetry/disable", s.withAuth(s.handleTelemetryDisable))
 	s.mux.HandleFunc("GET /v1/telemetry/status", s.withAuth(s.handleTelemetryStatus))
+	s.mux.HandleFunc("POST /v1/plugin/credentials", s.withAuth(s.handleSetPluginCredentials))
+	s.mux.HandleFunc("DELETE /v1/plugin/credentials/{host}", s.withAuth(s.handleDeletePluginCredentials))
+	s.mux.HandleFunc("GET /v1/plugin/credentials/{host}", s.withAuth(s.handleHasPluginCredentials))
 }
 
 func (s *Server) handlePairPage(response http.ResponseWriter, request *http.Request) {
@@ -122,6 +127,9 @@ func (s *Server) handleHello(response http.ResponseWriter, request *http.Request
 			"mcp-merge",
 			"hook-merge",
 			"plugin-install",
+			"plugin-recipe",
+			"plugin-credentials",
+			"git-clone",
 			"telemetry-export",
 		},
 	})
@@ -160,10 +168,91 @@ func (s *Server) handleInstall(response http.ResponseWriter, request *http.Reque
 	}
 	state, err := s.manager.Install(body.Asset, body.Options)
 	if err != nil {
+		if writeInstallTypedError(response, err) {
+			return
+		}
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"state": state})
+}
+
+// writeInstallTypedError zachytí strukturované chyby z plugin recipe install
+// (typicky z gitauth) a vrátí HTTP odpověď s konkrétním `code` pro UI.
+// Vrací true, pokud chybu rozpoznal a odpověď zapsal.
+func writeInstallTypedError(response http.ResponseWriter, err error) bool {
+	var authErr *gitauth.AuthRequiredError
+	if errors.As(err, &authErr) {
+		writeJSON(response, http.StatusUnauthorized, map[string]any{
+			"error":   errorTitle(http.StatusUnauthorized),
+			"code":    "git_auth_required",
+			"message": "Klonování marketplace selhalo na autentizaci. Vlož PAT v Hub UI a opakuj instalaci.",
+			"details": map[string]string{
+				"host": authErr.Host,
+				"url":  authErr.URL,
+			},
+		})
+		return true
+	}
+	var notFoundErr *gitauth.NotFoundError
+	if errors.As(err, &notFoundErr) {
+		writeJSON(response, http.StatusNotFound, map[string]any{
+			"error":   errorTitle(http.StatusNotFound),
+			"code":    "git_repo_not_found",
+			"message": "Marketplace repo neexistuje nebo k němu nemáš přístup.",
+			"details": map[string]string{
+				"url": notFoundErr.URL,
+			},
+		})
+		return true
+	}
+	var networkErr *gitauth.NetworkError
+	if errors.As(err, &networkErr) {
+		writeJSON(response, http.StatusBadGateway, map[string]any{
+			"error":   "Bad Gateway",
+			"code":    "git_network_error",
+			"message": "Síťová chyba při komunikaci s git serverem.",
+			"details": map[string]string{
+				"url": networkErr.URL,
+			},
+		})
+		return true
+	}
+	return false
+}
+
+type pluginCredentialsRequest struct {
+	Host  string `json:"host"`
+	Token string `json:"token"`
+}
+
+func (s *Server) handleSetPluginCredentials(response http.ResponseWriter, request *http.Request) {
+	var body pluginCredentialsRequest
+	if !decodeBody(response, request, &body) {
+		return
+	}
+	if err := s.manager.SetGitCredential(body.Host, body.Token); err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "host": strings.ToLower(strings.TrimSpace(body.Host))})
+}
+
+func (s *Server) handleDeletePluginCredentials(response http.ResponseWriter, request *http.Request) {
+	host := request.PathValue("host")
+	if err := s.manager.DeleteGitCredential(host); err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "host": strings.ToLower(strings.TrimSpace(host))})
+}
+
+func (s *Server) handleHasPluginCredentials(response http.ResponseWriter, request *http.Request) {
+	host := request.PathValue("host")
+	writeJSON(response, http.StatusOK, map[string]any{
+		"host":   strings.ToLower(strings.TrimSpace(host)),
+		"stored": s.manager.HasGitCredential(host),
+	})
 }
 
 func (s *Server) handleDiff(response http.ResponseWriter, request *http.Request) {

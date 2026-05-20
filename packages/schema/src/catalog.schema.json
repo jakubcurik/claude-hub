@@ -25,7 +25,8 @@
     "id": { "type": "string", "minLength": 1 },
     "type": {
       "type": "string",
-      "enum": ["skill", "command", "mcp", "hook", "plugin", "config"]
+      "enum": ["skill", "command", "mcp", "hook", "plugin", "config"],
+      "$comment": "Pro type=\"plugin\" se očekává recipe payload: pole `files` obsahuje jediný soubor s `path` = \"recipe.json\" a `content` = JSON-stringified PluginRecipe (viz packages/schema/src/index.ts). Daemon recipe naparsuje, naklonuje marketplace repo do ~/.claude/plugins/marketplaces/<name>/ a JSON-patchuje ~/.claude/settings.json (extraKnownMarketplaces, enabledPlugins, pluginConfigs). Validace probíhá v API a v daemonu, ne v JSON Schema (cross-field conditional)."
     },
     "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
     "name": { "type": "string", "minLength": 1 },

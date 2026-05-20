@@ -65,6 +65,7 @@ Předpoklady:
 
 - **Node.js ≥ 22**, **npm ≥ 10**
 - **Go 1.26** (pouze pro daemon mimo Docker)
+- **git ≥ 2.20** (daemon ho používá pro klonování plugin marketplace repos)
 - **Docker Desktop** (pro úplné spuštění včetně Postgresu)
 
 ### Varianta A — všechno přes Docker

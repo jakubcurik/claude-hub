@@ -72,7 +72,11 @@ Stránka pro potvrzení párování. Vstup `?returnUrl=…` musí být absolutn�
     "diff",
     "mcp-merge",
     "hook-merge",
-    "plugin-install"
+    "plugin-install",
+    "plugin-recipe",
+    "plugin-credentials",
+    "git-clone",
+    "telemetry-export"
   ]
 }
 ```
@@ -186,9 +190,35 @@ Vrátí `LocalAssetExport` připravený k publikování do katalogu:
 - pro **command**: jeden Markdown soubor (`<slug>.md`),
 - pro **hook v `settings.json`**: vyexportuje pouze sekci `hooks` jako `settings.hooks.json`,
 - pro **MCP**: jeden `.mcp.json`,
+- pro **plugin**: pokud byl plugin instalovaný přes Hub recipe model, vrátí původní `recipe.json` z manifest payloadu (round-trip). Pluginy instalované jinak než přes Hub se musí publikovat ručně přes UI (marketplace URL + plugin name).
 - ostatní: nejprve textový soubor, jinak adresářová struktura.
 
 Soubory musí být validní UTF-8. Daemon shromáždí všechna varování z `textWarnings` a vrátí je v `warnings`.
+
+### `POST /v1/install` — plugin recipe specifika
+
+Když `asset.type === "plugin"`, daemon očekává `asset.files = [{ path: "recipe.json", content: "<JSON-stringified PluginRecipe>" }]`. Instalace:
+
+1. Vytvoří per-marketplace lock (paralelní installs sdílející marketplace se serializují).
+2. Klonuje marketplace repo do `~/.claude/plugins/marketplaces/<marketplaceName>/` přes auth ladder:
+   - **L1**: systémový git (SSH agent, gh/glab CLI, system credential helper).
+   - **L2**: pokud L1 selhalo na auth, daemon natáhne PAT z OS keychainu (přes `github.com/zalando/go-keyring`) a předá git přes dočasný `GIT_ASKPASS` skript (mode 0700, smazaný v `defer`).
+   - **L3**: pokud ani keychain nemá token, vrátí `*gitauth.AuthRequiredError` → server mapuje na HTTP 401 s `code: "git_auth_required"` a `details.host`.
+3. JSON-patchuje `~/.claude/settings.json`: `extraKnownMarketplaces[<name>]`, `enabledPlugins["<plugin>@<mp>"]`, volitelně `pluginConfigs["<plugin>@<mp>"].options`.
+4. Patchuje `~/.claude/plugins/installed_plugins.json` (Claude Code se podle něj orientuje).
+5. Uloží manifest s `RecipePayload` + `ContentSnapshots` (předchozí hodnoty pro rollback) do `~/.claude/.claude-hub/installed/plugin-<slug>__user.json`.
+
+### `POST /v1/plugin/credentials`
+
+```json
+{ "host": "github.com", "token": "ghp_..." }
+```
+
+Uloží PAT do OS keychainu pro `host`. Hub UI ho volá, když install pluginu vrátil 401 `git_auth_required`. Token nikdy nejde do `settings.json` ani do logu; daemon ho čte jen v okamžiku git operace a předává přes `GIT_ASKPASS`. Host musí matchovat DNS hostname pattern; `localhost` a IP-literály jsou zamítnuty (defense-in-depth proti SSRF).
+
+### `DELETE /v1/plugin/credentials/{host}` / `GET /v1/plugin/credentials/{host}`
+
+Smazání PAT, resp. boolean check (`stored: true|false`) bez exposování hodnoty.
 
 ## Datové struktury
 
@@ -229,6 +259,12 @@ type LocalAssetState struct {
 | Tajné klíče v obsahu  | `secretLikePattern = (api_key\|token\|secret\|password)\s*[:=]`            |
 | Osobní cesty          | `localPathPattern = (C:\\Users\\\|/users/\|/home/)`                        |
 | Settings.json export  | Pouze sekce `hooks`, nikdy celé nastavení                                  |
+| GIT_ASKPASS skript    | Mode `0700` na POSIX, `os.TempDir()` (ACL na Windows), smazaný v `defer`   |
+| PAT v keychainu       | `github.com/zalando/go-keyring` — macOS Keychain / Win Credential Manager / libsecret. Service `claude-hub-daemon`, account `git-pat:<host>`. Daemon ho nikdy nelogguje. |
+| Recipe sensitive keys | `sensitiveKeyPattern` zamítne `defaultOptions` obsahující `token`, `secret`, `password`, `api[_-]?key`, `client[_-]?secret`, `refresh[_-]?token`, `access[_-]?token`, `private[_-]?key`, `credential` |
+| Git URL validation    | https:// nebo ssh:// jen, IP-literály a localhost zamítnuty (SSRF mitigation) |
+| Marketplace path slug | `validSlugPattern = ^[a-z0-9]+(-[a-z0-9]+)*$` zamítne path traversal v adresářových segmentech |
+| Token v git stderr    | `Redact()` přepíše `https://user:TOKEN@host` na `https://user:[REDACTED]@host` před logem/error returnem |
 
 ## Testy
 
