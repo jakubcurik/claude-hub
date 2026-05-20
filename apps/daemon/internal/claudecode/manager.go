@@ -1923,13 +1923,23 @@ func (m *Manager) assetExportFiles(asset LocalAsset) ([]AssetFile, error) {
 	}
 	if asset.Type == AssetTypePlugin {
 		// Pluginy se v Hub modelu nesdílí jako file bundle, ale jako recipe
-		// (marketplace pointer). Pokud má plugin Hub manifest s RecipePayload,
-		// vrátíme ten — round-trip funguje. Bez manifestu (plugin instalovaný
-		// jinak než přes Hub) musí uživatel vyplnit recipe formulář v UI.
+		// (marketplace pointer). Dvě cesty:
+		//  1) Plugin byl instalovaný přes Hub recipe → manifest má RecipePayload.
+		//  2) Plugin byl instalovaný klasicky přes `/plugin marketplace add ...` →
+		//     daemon zrekonstruuje recipe z installed_plugins.json + .git/config
+		//     marketplace klonu.
 		if recipeJSON := m.recipePayloadFromManifests(asset.Slug); recipeJSON != "" {
 			return []AssetFile{{Path: PluginRecipeFilePath, Content: recipeJSON}}, nil
 		}
-		return nil, errors.New("plugin nelze automaticky sdílet — vytvoř recipe ručně v UI (marketplace URL + plugin name)")
+		recipe, err := m.BuildRecipeFromLocalPlugin(asset.Slug)
+		if err != nil {
+			return nil, fmt.Errorf("plugin nelze automaticky sdílet: %w", err)
+		}
+		recipeJSON, err := json.MarshalIndent(recipe, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("nelze serializovat recipe: %w", err)
+		}
+		return []AssetFile{{Path: PluginRecipeFilePath, Content: string(recipeJSON)}}, nil
 	}
 	if asset.Type == AssetTypeHook {
 		if filePath, event, index, ok := splitSettingsHookPath(source); ok {

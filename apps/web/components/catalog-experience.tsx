@@ -48,7 +48,6 @@ import {
   updateMemberRole
 } from "@/app/actions";
 import { AppSidebar, type SidebarNavItem, type SidebarView } from "@/components/app-sidebar";
-import { PluginRecipeForm } from "@/components/plugin-recipe-form";
 import { useDaemon } from "@/lib/daemon-context";
 import { OwnerSettings } from "@/components/analytics/owner-settings";
 
@@ -202,7 +201,6 @@ export function CatalogExperience({
     submitting?: boolean;
     errorMessage?: string;
   } | null>(null);
-  const [pluginRecipeFormOpen, setPluginRecipeFormOpen] = useState(false);
   const [operationBusy, setOperationBusy] = useState(false);
   const setBusy = setOperationBusy;
   const lastFetchedConnectionVersion = useRef(0);
@@ -637,15 +635,6 @@ export function CatalogExperience({
                 ariaLabel="Filtrovat katalog"
                 onChange={setCatalogFilter}
               />
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setPluginRecipeFormOpen(true)}
-                title="Publikuj plugin recipe (marketplace pointer) bez file uploadu"
-              >
-                <PlugZap size={16} />
-                Sdílet plugin
-              </button>
             </div>
 
             <div className={`catalog-grid${busy ? " busy" : ""}`} aria-busy={busy}>
@@ -925,17 +914,6 @@ export function CatalogExperience({
           errorMessage={credentialsPrompt.errorMessage}
           onCancel={() => setCredentialsPrompt(null)}
           onSubmit={submitCredentialsPrompt}
-        />
-      ) : null}
-
-      {pluginRecipeFormOpen ? (
-        <PluginRecipeForm
-          onClose={() => setPluginRecipeFormOpen(false)}
-          onPublished={async (asset) => {
-            setPluginRecipeFormOpen(false);
-            await refresh();
-            showToast(`Plugin recipe "${asset.name}" publikováno do katalogu.`);
-          }}
         />
       ) : null}
 

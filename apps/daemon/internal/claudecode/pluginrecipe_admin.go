@@ -200,6 +200,116 @@ func (m *Manager) DeleteGitCredential(host string) error {
 	return gitauth.NewOSKeyring().Delete(cleanHost)
 }
 
+// BuildRecipeFromLocalPlugin sestaví PluginRecipe z lokálně nainstalovaného
+// pluginu — ať už byl instalovaný přes Hub recipe model nebo přes
+// `/plugin marketplace add ...` v Claude Code. Volá ho exportLocalAsset, aby
+// uživatel mohl jedním klikem nasdílet plugin, který má lokálně.
+//
+// Postup:
+//  1. Najde plugin v ~/.claude/plugins/installed_plugins.json podle slugu.
+//  2. Z pluginKey ("<plugin>@<marketplace>") extrahuje obě jména.
+//  3. Najde marketplace clone v ~/.claude/plugins/marketplaces/<marketplace>/
+//  4. Z .git/config přečte remote URL.
+//  5. Pokud URL ukazuje na github.com → source=github (repo=owner/repo),
+//     jinak source=url.
+func (m *Manager) BuildRecipeFromLocalPlugin(pluginSlug string) (*PluginRecipe, error) {
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+	doc, err := readPluginDoc(pluginManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("nelze přečíst installed_plugins.json: %w", err)
+	}
+
+	// Plugin keys v installed_plugins.json jsou "<plugin>@<marketplace>".
+	// Slug v LocalAsset je Slugify(pluginKey) — zpětně z toho nelze přesně
+	// rekonstruovat originální key (Slugify odstraňuje @ a další znaky), takže
+	// musíme projít všechny klíče a najít ten, jehož slug matchuje.
+	var pluginKey string
+	for key := range doc.Plugins {
+		if Slugify(key) == pluginSlug {
+			pluginKey = key
+			break
+		}
+	}
+	if pluginKey == "" {
+		return nil, fmt.Errorf("plugin %q nenalezen v installed_plugins.json — pravděpodobně není v Claude Code zaregistrovaný", pluginSlug)
+	}
+
+	atIdx := strings.LastIndex(pluginKey, "@")
+	if atIdx < 0 {
+		return nil, fmt.Errorf("plugin key %q nemá očekávaný tvar \"<plugin>@<marketplace>\"", pluginKey)
+	}
+	pluginName := pluginKey[:atIdx]
+	marketplaceName := pluginKey[atIdx+1:]
+
+	// Marketplace clone musí existovat (Claude Code ho vytvoří při install).
+	mpDir := marketplaceDirFor(m.ClaudeHome, marketplaceName)
+	originURL, err := readGitOriginURL(mpDir)
+	if err != nil {
+		return nil, fmt.Errorf("nelze zjistit marketplace URL — marketplace %q není naklonovaný v %s (%w)", marketplaceName, mpDir, err)
+	}
+
+	source := classifyGitURL(originURL)
+	recipe := &PluginRecipe{
+		MarketplaceName:   marketplaceName,
+		MarketplaceSource: source,
+		PluginName:        pluginName,
+		// AutoUpdate nepřebíráme — uživatel ho rozhodne v UI při uploadu.
+	}
+	return recipe, nil
+}
+
+// readGitOriginURL přečte URL remote "origin" z .git/config bez závislosti na
+// git binárce. Parsuje INI-style soubor — žádné případy obecnýho git configu
+// tady neumíme, ale pro `[remote "origin"] url = ...` to stačí.
+func readGitOriginURL(repoPath string) (string, error) {
+	configPath := filepath.Join(repoPath, ".git", "config")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", err
+	}
+	inOrigin := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inOrigin = trimmed == `[remote "origin"]`
+			continue
+		}
+		if inOrigin && strings.HasPrefix(strings.ToLower(trimmed), "url") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 {
+				return strings.TrimSpace(parts[1]), nil
+			}
+		}
+	}
+	return "", errors.New("origin URL nenalezena v .git/config")
+}
+
+// classifyGitURL rozhodne, jestli URL má tvar github (owner/repo) nebo obecné
+// git URL. Pro github vrací zkrácený source s polem "repo", pro ostatní hosty
+// (GitLab, Bitbucket, self-hosted) plný url source.
+func classifyGitURL(rawURL string) MarketplaceSource {
+	// SSH zkrácený tvar: git@github.com:owner/repo.git → převést na https.
+	if strings.HasPrefix(rawURL, "git@") {
+		// git@host:path
+		at := strings.Index(rawURL, "@")
+		colon := strings.Index(rawURL[at:], ":")
+		if colon > 0 {
+			host := rawURL[at+1 : at+colon]
+			path := strings.TrimSuffix(rawURL[at+colon+1:], ".git")
+			if strings.EqualFold(host, "github.com") {
+				return MarketplaceSource{Source: "github", Repo: path}
+			}
+			return MarketplaceSource{Source: "url", URL: "https://" + host + "/" + path + ".git"}
+		}
+	}
+	// HTTPS tvar.
+	if strings.HasPrefix(rawURL, "https://github.com/") {
+		path := strings.TrimSuffix(strings.TrimPrefix(rawURL, "https://github.com/"), ".git")
+		return MarketplaceSource{Source: "github", Repo: path}
+	}
+	return MarketplaceSource{Source: "url", URL: rawURL}
+}
+
 // recipePayloadFromManifests hledá Hub recipe manifest podle pluginSlug a
 // vrátí RecipePayload (JSON-stringified PluginRecipe). Prázdný string, pokud
 // manifest neexistuje nebo recipe payload chybí.
