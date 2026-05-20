@@ -2200,6 +2200,23 @@ func (m *Manager) assetState(asset CatalogAsset, localIndex map[string]LocalAsse
 		anyEnabled = true
 	}
 
+	// Plugin recipe může být lokálně nainstalovaný bez Hub manifestu — uživatel
+	// si plugin přidal přes `/plugin marketplace add ...` v Claude Code. V tom
+	// případě čteme stav přímo z installed_plugins.json + settings.json
+	// (enabledPlugins flag).
+	if asset.Type == AssetTypePlugin && !anyInstalled {
+		if pluginKey := m.findPluginKeyBySlug(asset.Slug); pluginKey != "" {
+			anyInstalled = true
+			anyEnabled = m.isPluginEnabledInSettings(pluginKey)
+			scopeStates = append(scopeStates, InstallScopeState{
+				Scope:        "user",
+				Installed:    true,
+				Enabled:      anyEnabled,
+				ManagedByHub: false,
+			})
+		}
+	}
+
 	state := "not_installed"
 	switch {
 	case anyLocalChanges:

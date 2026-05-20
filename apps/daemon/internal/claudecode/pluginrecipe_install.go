@@ -223,17 +223,22 @@ func (m *Manager) uninstallPluginRecipe(asset CatalogAsset, opts InstallOptions)
 }
 
 // togglePluginRecipe překlopí enabledPlugins[<plugin>@<mp>] v settings.json
-// na true/false. Sleduje Enabled flag v manifestu.
+// na true/false. Funguje pro plugin instalovaný Hub recipe modelem i pro
+// plugin instalovaný klasicky přes `/plugin marketplace add ...` (bez Hub
+// manifestu) — v druhém případě odvodí pluginKey z installed_plugins.json.
 func (m *Manager) togglePluginRecipe(asset CatalogAsset, opts InstallOptions, enabled bool) (LocalAssetState, error) {
 	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
-	if record == nil {
-		return LocalAssetState{}, errors.New("plugin recipe není evidovaný v Claude Hubu, nelze přepnout")
-	}
 
-	_, pluginKey, _ := parseRecipePluginEntries(record.PluginEntries)
+	var pluginKey string
+	if record != nil {
+		_, pluginKey, _ = parseRecipePluginEntries(record.PluginEntries)
+	}
 	if pluginKey == "" {
-		return LocalAssetState{}, errors.New("manifest postrádá plugin identifikátor")
+		pluginKey = m.findPluginKeyBySlug(asset.Slug)
+	}
+	if pluginKey == "" {
+		return LocalAssetState{}, errors.New("plugin nelze přepnout — nenašel jsem ho v installed_plugins.json")
 	}
 
 	settingsPath := paths.TargetFile
@@ -241,8 +246,10 @@ func (m *Manager) togglePluginRecipe(asset CatalogAsset, opts InstallOptions, en
 	if err != nil {
 		return LocalAssetState{}, err
 	}
-	if _, err := m.backupMergeArtifact(paths, asset, doc); err != nil {
-		return LocalAssetState{}, err
+	if record != nil {
+		if _, err := m.backupMergeArtifact(paths, asset, doc); err != nil {
+			return LocalAssetState{}, err
+		}
 	}
 	if err := togglePluginInSettings(doc, pluginKey, enabled); err != nil {
 		return LocalAssetState{}, err
@@ -251,11 +258,13 @@ func (m *Manager) togglePluginRecipe(asset CatalogAsset, opts InstallOptions, en
 		return LocalAssetState{}, err
 	}
 
-	record.Enabled = enabled
-	record.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	record.ContentFingerprint = shaText(readText(settingsPath))
-	if err := writeJSON(paths.Manifest, record); err != nil {
-		return LocalAssetState{}, err
+	if record != nil {
+		record.Enabled = enabled
+		record.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		record.ContentFingerprint = shaText(readText(settingsPath))
+		if err := writeJSON(paths.Manifest, record); err != nil {
+			return LocalAssetState{}, err
+		}
 	}
 
 	localIndex, _ := m.localInstalledIndex()

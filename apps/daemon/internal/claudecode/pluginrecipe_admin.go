@@ -310,6 +310,47 @@ func classifyGitURL(rawURL string) MarketplaceSource {
 	return MarketplaceSource{Source: "url", URL: rawURL}
 }
 
+// findPluginKeyBySlug projde installed_plugins.json a najde plugin, jehož
+// Slugified key matchuje hledaný slug. Vrátí původní pluginKey (např.
+// "animato-mcp@animato"), nebo prázdný string, pokud plugin lokálně není.
+//
+// Slouží pro detekci „plugin je lokálně nainstalovaný, i když nebyl
+// instalovaný přes Hub recipe model".
+func (m *Manager) findPluginKeyBySlug(slug string) string {
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+	doc, err := readPluginDoc(pluginManifestPath)
+	if err != nil {
+		return ""
+	}
+	for key := range doc.Plugins {
+		if Slugify(key) == slug {
+			return key
+		}
+	}
+	return ""
+}
+
+// isPluginEnabledInSettings přečte ~/.claude/settings.json a vrátí stav
+// enabledPlugins[pluginKey]. Default je true (plugin je default zapnutý,
+// pokud existuje v installed_plugins.json) — explicitně false jen pokud
+// settings.json říká false.
+func (m *Manager) isPluginEnabledInSettings(pluginKey string) bool {
+	settingsPath := filepath.Join(m.ClaudeHome, "settings.json")
+	doc, err := readSettingsDoc(settingsPath)
+	if err != nil {
+		return true
+	}
+	enabled, err := readSubObject(doc.Sections["enabledPlugins"])
+	if err != nil {
+		return true
+	}
+	raw, ok := enabled[pluginKey]
+	if !ok {
+		return true
+	}
+	return string(raw) != "false"
+}
+
 // recipePayloadFromManifests hledá Hub recipe manifest podle pluginSlug a
 // vrátí RecipePayload (JSON-stringified PluginRecipe). Prázdný string, pokud
 // manifest neexistuje nebo recipe payload chybí.
