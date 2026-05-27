@@ -14,6 +14,7 @@ import {
   Search,
   ToggleLeft,
   ToggleRight,
+  Trash2,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,6 +37,7 @@ import type {
 } from "@claude-hub/schema";
 import { DaemonError } from "@/lib/daemon-client";
 import {
+  deleteCatalogAsset,
   deleteCollection,
   generateAndRegisterSigningKey,
   listTeamMembers,
@@ -453,6 +455,28 @@ export function CatalogExperience({
     }
   }
 
+  async function requestCatalogDelete(asset: CatalogAsset) {
+    if (
+      !window.confirm(
+        `Smazat položku „${asset.name}" z katalogu? Smaže se i historie verzí. Lokální instalace na počítačích zůstanou.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteCatalogAsset(asset.type, asset.slug);
+      showToast(`Položka „${asset.name}" byla z katalogu smazána.`);
+      void logCatalogEvent({
+        event: "delete",
+        assetId: asset.id,
+        assetVersion: asset.version
+      });
+      window.location.reload();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Mazání z katalogu selhalo.");
+    }
+  }
+
   function openAssetDetail(asset: CatalogAsset) {
     setDetailModal({
       name: asset.name,
@@ -645,8 +669,10 @@ export function CatalogExperience({
                 visibleAssets.map((asset) => (
                   <AssetCard
                     asset={asset}
+                    canDeleteFromCatalog={isAdmin || asset.owner.id === userId}
                     connected={isConnected}
                     key={asset.id}
+                    onCatalogDelete={() => requestCatalogDelete(asset)}
                     onDiff={() => requestDiff(asset)}
                     onDisable={() => setEnabled(asset, false)}
                     onEnable={() => setEnabled(asset, true)}
@@ -1176,7 +1202,9 @@ function detectInstallPlatform(): InstallPlatform {
 
 function AssetCard({
   asset,
+  canDeleteFromCatalog,
   connected,
+  onCatalogDelete,
   onDiff,
   onDisable,
   onEnable,
@@ -1187,7 +1215,9 @@ function AssetCard({
   state
 }: {
   asset: CatalogAsset;
+  canDeleteFromCatalog: boolean;
   connected: boolean;
+  onCatalogDelete: () => void;
   onDiff: () => void;
   onDisable: () => void;
   onEnable: () => void;
@@ -1256,6 +1286,17 @@ function AssetCard({
             type="button"
           >
             <X size={15} />
+          </button>
+        ) : null}
+        {canDeleteFromCatalog ? (
+          <button
+            aria-label="Smazat z katalogu"
+            className="icon-button danger"
+            onClick={onCatalogDelete}
+            title="Smazat z katalogu"
+            type="button"
+          >
+            <Trash2 size={15} />
           </button>
         ) : null}
       </div>

@@ -432,6 +432,13 @@ export async function rollbackAssetVersion(type: string, slug: string, version: 
   revalidatePath("/");
 }
 
+export async function deleteCatalogAsset(type: string, slug: string) {
+  await hubFetch<{ ok: true }>(`/v1/teams/${hubTeamId()}/catalog/${type}/${slug}`, {
+    method: "DELETE"
+  });
+  revalidatePath("/");
+}
+
 export async function listAssetVersions(type: string, slug: string) {
   try {
     const { versions } = await hubFetch<{

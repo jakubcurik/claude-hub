@@ -513,6 +513,45 @@ export async function registerRoutes(
     }
   );
 
+  app.delete<{ Params: { teamId: string; type: string; slug: string } }>(
+    "/v1/teams/:teamId/catalog/:type/:slug",
+    { schema: { params: teamAssetParamsSchema } },
+    async (request, reply) => {
+      const user = await requireUser(request, reply, repository);
+      if (!user) return;
+      const membership = await requireMembership(reply, repository, request.params.teamId, user.id);
+      if (!membership) return;
+
+      // Smazat smí admin/owner týmu, nebo autor položky (ten, kdo ji nahrál).
+      const existing = await repository.getCatalog(request.params.teamId);
+      const asset = existing.find(
+        (item) => item.type === request.params.type && item.slug === request.params.slug
+      );
+      if (!asset) {
+        return sendError(reply, 404, "not_found", "Položka neexistuje.");
+      }
+
+      const isOwnerOfAsset = asset.owner.id === user.id;
+      const isAdmin = roleAtLeast(membership.role, "admin");
+      if (!isOwnerOfAsset && !isAdmin) {
+        return sendError(
+          reply,
+          403,
+          "forbidden",
+          "Smazat můžete jen vlastní položky, nebo požádejte správce týmu."
+        );
+      }
+
+      await repository.deleteAsset(
+        request.params.teamId,
+        request.params.type,
+        request.params.slug,
+        user.id
+      );
+      return { ok: true };
+    }
+  );
+
   // ────────── Events ──────────
 
   app.get<{

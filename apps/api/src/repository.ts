@@ -638,6 +638,37 @@ export class RegistryRepository {
     return asset;
   }
 
+  async deleteAsset(teamId: string, type: string, slug: string, byUser: string) {
+    const existing = await this.pool.query<{ asset: CatalogAsset }>(
+      `SELECT asset FROM catalog_assets WHERE team_id = $1 AND type = $2 AND slug = $3`,
+      [teamId, type, slug]
+    );
+    if (existing.rows.length === 0) {
+      return null;
+    }
+    const asset = existing.rows[0].asset;
+
+    await this.pool.query(
+      `DELETE FROM catalog_assets WHERE team_id = $1 AND type = $2 AND slug = $3`,
+      [teamId, type, slug]
+    );
+    await this.pool.query(
+      `DELETE FROM catalog_asset_versions WHERE team_id = $1 AND type = $2 AND slug = $3`,
+      [teamId, type, slug]
+    );
+
+    await this.recordEvent({
+      occurredAt: new Date().toISOString(),
+      teamId,
+      userId: byUser,
+      event: "delete",
+      assetId: asset.id,
+      assetVersion: asset.version
+    });
+
+    return asset;
+  }
+
   // ────────────────── Devices ──────────────────
 
   async listPairedDevices(userId: string): Promise<PairedDeviceSummary[]> {
