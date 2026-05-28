@@ -993,7 +993,7 @@ func (m *Manager) Uninstall(asset CatalogAsset, opts InstallOptions) (LocalAsset
 
 	asset = normalizeAsset(asset)
 	opts = opts.Normalize()
-	if err := validateSupported(asset); err != nil {
+	if err := validateSupportedForUninstall(asset); err != nil {
 		return LocalAssetState{}, err
 	}
 	if err := validateInstallOptions(opts); err != nil {
@@ -2518,6 +2518,28 @@ func validateSupported(asset CatalogAsset) error {
 	}
 	if len(asset.Files) == 0 {
 		return errors.New("položka neobsahuje žádné soubory")
+	}
+	for _, file := range asset.Files {
+		if _, err := SafeRelativePath(file.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSupportedForUninstall je vlažnější validace pro Uninstall path:
+// asset typ a slug stále požadujeme, ale Files mohou chybět. Lokálně-instalovaný
+// plugin (např. ručně přes `/plugin install`) Hub eviduje jen jako záznam v
+// installed_plugins.json bez recipe.json — UI při uninstallu žádné Files poslat
+// nemůže, ale daemon si pluginKey odvodí ze slugu.
+func validateSupportedForUninstall(asset CatalogAsset) error {
+	switch asset.Type {
+	case AssetTypeSkill, AssetTypeCommand, AssetTypeMCP, AssetTypeHook, AssetTypePlugin, AssetTypeConfig:
+	default:
+		return fmt.Errorf("tato verze lokální služby nepodporuje typ položky %q", asset.Type)
+	}
+	if asset.Slug == "" {
+		return errors.New("chybí technický název položky (slug)")
 	}
 	for _, file := range asset.Files {
 		if _, err := SafeRelativePath(file.Path); err != nil {

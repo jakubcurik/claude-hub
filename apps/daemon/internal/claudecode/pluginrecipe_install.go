@@ -78,6 +78,27 @@ func (m *Manager) installPluginRecipe(asset CatalogAsset, opts InstallOptions) (
 		return LocalAssetState{}, fmt.Errorf("nelze zapsat settings.json: %w", err)
 	}
 
+	// Patch known_marketplaces.json: Claude Code načítá marketplace přes tento
+	// soubor (settings.json/extraKnownMarketplaces nestačí — bez entry tady
+	// `/plugin` hlásí "Marketplace not found" / "expected object, received string").
+	kmPath := knownMarketplacesPath(m.ClaudeHome)
+	kmDoc, err := readKnownMarketplacesDoc(kmPath)
+	if err != nil {
+		return LocalAssetState{}, fmt.Errorf("nelze načíst known_marketplaces.json: %w", err)
+	}
+	prevRaw, prevOK, err := upsertKnownMarketplace(kmDoc, recipe, mpDir)
+	if err != nil {
+		return LocalAssetState{}, fmt.Errorf("nelze připravit known_marketplaces entry: %w", err)
+	}
+	if prevOK {
+		snapshots[recipeSnapshotKey("known_marketplaces", recipe.MarketplaceName)] = prevRaw
+	} else {
+		snapshots[recipeSnapshotKey("known_marketplaces", recipe.MarketplaceName)] = snapshotAbsent
+	}
+	if err := writeKnownMarketplacesDoc(kmPath, kmDoc); err != nil {
+		return LocalAssetState{}, fmt.Errorf("nelze zapsat known_marketplaces.json: %w", err)
+	}
+
 	// Patch installed_plugins.json: Claude Code se podle něj orientuje, který
 	// plugin@marketplace je nainstalovaný a kde leží.
 	pluginKey := recipe.PluginKey()
@@ -140,12 +161,17 @@ func (m *Manager) installPluginRecipe(asset CatalogAsset, opts InstallOptions) (
 
 // uninstallPluginRecipe vrátí settings.json a installed_plugins.json do
 // pre-install stavu na základě snapshots v manifestu. Pokud žádný jiný
-// recipe nesdílí marketplace, smaže i klon marketplace.
+// recipe/plugin nesdílí marketplace, smaže i klon marketplace a entry v
+// known_marketplaces.json.
+//
+// Pokud Hub manifest chybí (plugin instalovaný ručně přes `/plugin install`),
+// spadne to do fallbacku `uninstallPluginLocalFallback`, který odvodí pluginKey
+// z installed_plugins.json a uklidí stav best-effort.
 func (m *Manager) uninstallPluginRecipe(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
 	paths := m.pathsForScope(asset, opts)
 	record, _ := readManifest(paths.Manifest)
 	if record == nil {
-		return LocalAssetState{}, errors.New("plugin recipe není evidovaný v Claude Hubu, nelze bezpečně odstranit")
+		return m.uninstallPluginLocalFallback(asset, opts)
 	}
 
 	marketplaceName, pluginKey, _ := parseRecipePluginEntries(record.PluginEntries)
@@ -204,8 +230,24 @@ func (m *Manager) uninstallPluginRecipe(asset CatalogAsset, opts InstallOptions)
 		_ = writePluginDoc(pluginManifestPath, pluginDocPtr)
 	}
 
-	// Smaž marketplace clone, pokud na něj neukazuje jiný recipe.
-	if !m.marketplaceReferencedByOtherRecipes(marketplaceName, asset.ID) {
+	// Restore known_marketplaces.json — entry buď obnov, nebo smaž.
+	kmPath := knownMarketplacesPath(m.ClaudeHome)
+	if kmDoc, kerr := readKnownMarketplacesDoc(kmPath); kerr == nil {
+		snapKey := recipeSnapshotKey("known_marketplaces", marketplaceName)
+		if snap, ok := record.ContentSnapshots[snapKey]; ok {
+			_ = restoreKnownMarketplace(kmDoc, marketplaceName, snap)
+		} else if !marketplaceReferencedByInstalledPlugins(pluginDocPtr, marketplaceName, "") {
+			// Starší manifesty (před přidáním known_marketplaces snapshotu) entry
+			// nemají. Smaž ji jen tehdy, když na marketplace už neukazuje žádný plugin.
+			delete(kmDoc.Entries, marketplaceName)
+		}
+		_ = writeKnownMarketplacesDoc(kmPath, kmDoc)
+	}
+
+	// Smaž marketplace clone, pokud na něj neukazuje jiný recipe ani jiný plugin v installed_plugins.json.
+	stillReferenced := m.marketplaceReferencedByOtherRecipes(marketplaceName, asset.ID) ||
+		marketplaceReferencedByInstalledPlugins(pluginDocPtr, marketplaceName, "")
+	if !stillReferenced {
 		mpDir := marketplaceDirFor(m.ClaudeHome, marketplaceName)
 		_ = os.RemoveAll(mpDir)
 		// Pokud je marketplaces parent dir prázdný, taky ho zruš (kosmetika).
@@ -217,6 +259,88 @@ func (m *Manager) uninstallPluginRecipe(asset CatalogAsset, opts InstallOptions)
 
 	_ = os.Remove(paths.Manifest)
 	_ = os.Remove(paths.DisabledFile)
+
+	localIndex, _ := m.localInstalledIndex()
+	return m.assetState(asset, localIndex)
+}
+
+// uninstallPluginLocalFallback uklidí plugin, který byl instalovaný mimo Hub
+// (např. ručně přes `/plugin install <plugin>@<mp>` v Claude Code), takže nemá
+// Hub manifest a chybí snapshots pro byte-equal restore.
+//
+// Postup je best-effort:
+//  1. Najde pluginKey v installed_plugins.json přes Slugify(key) == asset.Slug.
+//  2. Smaže entry z installed_plugins.json a enabledPlugins/pluginConfigs v settings.json.
+//  3. Pokud žádný jiný plugin neukazuje na stejný marketplace, smaže entry
+//     v extraKnownMarketplaces, known_marketplaces.json a marketplace clone.
+func (m *Manager) uninstallPluginLocalFallback(asset CatalogAsset, opts InstallOptions) (LocalAssetState, error) {
+	paths := m.pathsForScope(asset, opts)
+	pluginManifestPath := filepath.Join(m.ClaudeHome, "plugins", "installed_plugins.json")
+	settingsPath := paths.TargetFile
+
+	pluginKey := m.findPluginKeyBySlug(asset.Slug)
+	if pluginKey == "" {
+		// Nic k odstranění — vrať aktuální stav (UI to ukáže jako "not installed").
+		localIndex, _ := m.localInstalledIndex()
+		return m.assetState(asset, localIndex)
+	}
+	atIdx := strings.LastIndex(pluginKey, "@")
+	if atIdx < 0 {
+		return LocalAssetState{}, fmt.Errorf("plugin key %q nemá tvar \"<plugin>@<marketplace>\"", pluginKey)
+	}
+	marketplaceName := pluginKey[atIdx+1:]
+
+	mpLock := m.marketplaceLock(marketplaceName)
+	mpLock.Lock()
+	defer mpLock.Unlock()
+
+	// Best-effort backup (manifest neexistuje, ale settings.json/installed_plugins.json ano).
+	if _, err := m.backup(paths, asset); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// 1) installed_plugins.json — smaž entry pro pluginKey.
+	pluginDocPtr, err := readPluginDoc(pluginManifestPath)
+	if err != nil {
+		return LocalAssetState{}, fmt.Errorf("nelze načíst installed_plugins.json: %w", err)
+	}
+	delete(pluginDocPtr.Plugins, pluginKey)
+	if err := writePluginDoc(pluginManifestPath, pluginDocPtr); err != nil {
+		return LocalAssetState{}, fmt.Errorf("nelze zapsat installed_plugins.json: %w", err)
+	}
+
+	// 2) settings.json — smaž enabledPlugins[pluginKey], pluginConfigs[pluginKey].
+	settingsDocPtr, err := readSettingsDoc(settingsPath)
+	if err != nil {
+		return LocalAssetState{}, err
+	}
+	if err := deletePluginKeyFromSettings(settingsDocPtr, pluginKey); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	// 3) Pokud na marketplace už neukazuje žádný plugin, ukliď i jeho stopy.
+	stillReferenced := marketplaceReferencedByInstalledPlugins(pluginDocPtr, marketplaceName, "") ||
+		m.marketplaceReferencedByOtherRecipes(marketplaceName, asset.ID)
+	if !stillReferenced {
+		_ = deleteMarketplaceFromSettings(settingsDocPtr, marketplaceName)
+	}
+	if err := writeSettingsDoc(settingsPath, settingsDocPtr); err != nil {
+		return LocalAssetState{}, err
+	}
+
+	if !stillReferenced {
+		kmPath := knownMarketplacesPath(m.ClaudeHome)
+		if kmDoc, kerr := readKnownMarketplacesDoc(kmPath); kerr == nil {
+			delete(kmDoc.Entries, marketplaceName)
+			_ = writeKnownMarketplacesDoc(kmPath, kmDoc)
+		}
+		mpDir := marketplaceDirFor(m.ClaudeHome, marketplaceName)
+		_ = os.RemoveAll(mpDir)
+		parent := filepath.Dir(mpDir)
+		if entries, derr := os.ReadDir(parent); derr == nil && len(entries) == 0 {
+			_ = os.Remove(parent)
+		}
+	}
 
 	localIndex, _ := m.localInstalledIndex()
 	return m.assetState(asset, localIndex)

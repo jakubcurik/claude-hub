@@ -609,6 +609,211 @@ func TestInstallPluginRecipePatchesSettingsAndManifest(t *testing.T) {
 	}
 }
 
+func TestInstallPluginRecipeWritesKnownMarketplacesEntry(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	manager := NewManager(t.TempDir())
+	_ = manager.EnsureBaseDirs()
+	manager.GitAuth = &fakeGitAuth{
+		t:       t,
+		headSHA: "abc123",
+		simulateClone: func(dest string) error {
+			return os.MkdirAll(filepath.Join(dest, ".git"), 0o755)
+		},
+	}
+
+	recipe := PluginRecipe{
+		MarketplaceName: "animato",
+		MarketplaceSource: MarketplaceSource{
+			Source: "url",
+			URL:    "https://gitlab.animato-lab.cz/jakub_curik/animato-marketplace.git",
+		},
+		PluginName: "centrum-mcp",
+	}
+	recipeJSON, _ := json.Marshal(recipe)
+
+	asset := CatalogAsset{
+		ID:      "plugin:animato__centrum-mcp",
+		Type:    AssetTypePlugin,
+		Slug:    "animato-centrum-mcp",
+		Name:    "Centrum MCP",
+		Version: "0.1.0",
+		Risk:    RiskHigh,
+		Files:   []AssetFile{{Path: PluginRecipeFilePath, Content: string(recipeJSON)}},
+	}
+
+	if _, err := manager.Install(asset, InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	kmPath := filepath.Join(manager.ClaudeHome, "plugins", "known_marketplaces.json")
+	kmDoc, err := readKnownMarketplacesDoc(kmPath)
+	if err != nil {
+		t.Fatalf("read known_marketplaces.json: %v", err)
+	}
+	entry, ok := kmDoc.Entries["animato"]
+	if !ok {
+		t.Fatalf("known_marketplaces.json neobsahuje 'animato' (entries=%v)", kmDoc.Entries)
+	}
+	mpDir := filepath.Join(manager.ClaudeHome, "plugins", "marketplaces", "animato")
+	if entry.InstallLocation != mpDir {
+		t.Errorf("installLocation = %q, want %q", entry.InstallLocation, mpDir)
+	}
+	if entry.LastUpdated == "" {
+		t.Errorf("lastUpdated je prázdné")
+	}
+	var src map[string]any
+	if err := json.Unmarshal(entry.Source, &src); err != nil {
+		t.Fatalf("source není objekt: %v (raw=%s)", err, string(entry.Source))
+	}
+	if src["source"] != "url" || src["url"] != "https://gitlab.animato-lab.cz/jakub_curik/animato-marketplace.git" {
+		t.Errorf("source mapuje špatně: %#v", src)
+	}
+
+	// Uninstall — entry musí zmizet (žádný jiný plugin na marketplace neukazuje).
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	kmDoc, _ = readKnownMarketplacesDoc(kmPath)
+	if _, ok := kmDoc.Entries["animato"]; ok {
+		t.Errorf("known_marketplaces.json stále obsahuje 'animato' po uninstall")
+	}
+}
+
+func TestUninstallPluginFallbackWithoutHubManifest(t *testing.T) {
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOTS", "")
+	t.Setenv("CLAUDE_HUB_WORKSPACE_ROOT", "")
+
+	manager := NewManager(t.TempDir())
+	_ = manager.EnsureBaseDirs()
+
+	// Simuluj plugin instalovaný mimo Hub (např. ručně přes `/plugin install`).
+	// installed_plugins.json má entry, settings.json má extraKnownMarketplaces
+	// a enabledPlugins, ale žádný Hub manifest neexistuje.
+	mpDir := filepath.Join(manager.ClaudeHome, "plugins", "marketplaces", "animato")
+	if err := os.MkdirAll(filepath.Join(mpDir, ".git"), 0o755); err != nil {
+		t.Fatalf("create mpDir: %v", err)
+	}
+
+	pluginManifestPath := filepath.Join(manager.ClaudeHome, "plugins", "installed_plugins.json")
+	installed := `{
+  "plugins": {
+    "centrum-mcp@animato": [
+      {"scope": "user", "projectPath": "", "installPath": "` + filepath.ToSlash(mpDir) + `", "version": "abc"}
+    ],
+    "marketing-mcp@animato": [
+      {"scope": "user", "projectPath": "", "installPath": "` + filepath.ToSlash(mpDir) + `", "version": "abc"}
+    ]
+  },
+  "version": 2
+}`
+	if err := os.WriteFile(pluginManifestPath, []byte(installed), 0o644); err != nil {
+		t.Fatalf("write installed_plugins.json: %v", err)
+	}
+
+	settingsPath := filepath.Join(manager.ClaudeHome, "settings.json")
+	settings := `{
+  "enabledPlugins": {
+    "centrum-mcp@animato": true,
+    "marketing-mcp@animato": true
+  },
+  "extraKnownMarketplaces": {
+    "animato": {
+      "source": {"source": "url", "url": "https://example.com/mp.git"},
+      "autoUpdate": true
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	kmPath := filepath.Join(manager.ClaudeHome, "plugins", "known_marketplaces.json")
+	known := `{"animato":{"source":{"source":"url","url":"https://example.com/mp.git"},"installLocation":"` + filepath.ToSlash(mpDir) + `","lastUpdated":"2026-05-28T06:34:28.000Z"}}`
+	if err := os.WriteFile(kmPath, []byte(known), 0o644); err != nil {
+		t.Fatalf("write known_marketplaces.json: %v", err)
+	}
+
+	// Asset jen s metadaty (žádný recipe file — Hub ho neviděl jako recipe install).
+	asset := CatalogAsset{
+		ID:      "plugin:centrum-mcp-animato",
+		Type:    AssetTypePlugin,
+		Slug:    Slugify("centrum-mcp@animato"),
+		Name:    "Centrum MCP",
+		Version: "0.1.0",
+		Risk:    RiskHigh,
+	}
+
+	if _, err := manager.Uninstall(asset, InstallOptions{}); err != nil {
+		t.Fatalf("uninstall fallback selhal: %v", err)
+	}
+
+	// installed_plugins.json už centrum-mcp nemá, marketing-mcp ano.
+	pluginDoc, err := readPluginDoc(pluginManifestPath)
+	if err != nil {
+		t.Fatalf("read installed_plugins.json: %v", err)
+	}
+	if _, ok := pluginDoc.Plugins["centrum-mcp@animato"]; ok {
+		t.Errorf("centrum-mcp entry stále v installed_plugins.json")
+	}
+	if _, ok := pluginDoc.Plugins["marketing-mcp@animato"]; !ok {
+		t.Errorf("marketing-mcp entry zmizla — neměla by, je v jiném pluginu na stejném marketplace")
+	}
+
+	// settings.json — centrum-mcp z enabledPlugins pryč, animato marketplace zůstává (marketing-mcp ho stále drží).
+	doc, _ := readSettingsDoc(settingsPath)
+	enabled, _ := readSubObject(doc.Sections["enabledPlugins"])
+	if _, ok := enabled["centrum-mcp@animato"]; ok {
+		t.Errorf("centrum-mcp stále v enabledPlugins")
+	}
+	if _, ok := enabled["marketing-mcp@animato"]; !ok {
+		t.Errorf("marketing-mcp zmizel z enabledPlugins")
+	}
+	mpSec, _ := readSubObject(doc.Sections["extraKnownMarketplaces"])
+	if _, ok := mpSec["animato"]; !ok {
+		t.Errorf("animato marketplace zmizel z extraKnownMarketplaces, přestože marketing-mcp na něj stále ukazuje")
+	}
+
+	// known_marketplaces.json a clone musí zůstat (marketing-mcp je stále drží).
+	kmDoc, _ := readKnownMarketplacesDoc(kmPath)
+	if _, ok := kmDoc.Entries["animato"]; !ok {
+		t.Errorf("animato entry zmizla z known_marketplaces.json, ale marketing-mcp ji stále potřebuje")
+	}
+	if !exists(mpDir) {
+		t.Errorf("marketplace clone smazán, ale marketing-mcp na něj stále ukazuje")
+	}
+
+	// Druhý uninstall — odstraní poslední plugin, marketplace musí zmizet všude.
+	asset2 := CatalogAsset{
+		ID:      "plugin:marketing-mcp-animato",
+		Type:    AssetTypePlugin,
+		Slug:    Slugify("marketing-mcp@animato"),
+		Name:    "Marketing MCP",
+		Version: "0.1.0",
+		Risk:    RiskHigh,
+	}
+	if _, err := manager.Uninstall(asset2, InstallOptions{}); err != nil {
+		t.Fatalf("druhý uninstall selhal: %v", err)
+	}
+
+	pluginDoc, _ = readPluginDoc(pluginManifestPath)
+	if len(pluginDoc.Plugins) != 0 {
+		t.Errorf("installed_plugins.json by měl být prázdný, je %v", pluginDoc.Plugins)
+	}
+	doc, _ = readSettingsDoc(settingsPath)
+	if _, ok := doc.Sections["extraKnownMarketplaces"]; ok {
+		t.Errorf("extraKnownMarketplaces stále existuje po odstranění posledního pluginu")
+	}
+	kmDoc, _ = readKnownMarketplacesDoc(kmPath)
+	if _, ok := kmDoc.Entries["animato"]; ok {
+		t.Errorf("animato entry stále v known_marketplaces.json po odstranění posledního pluginu")
+	}
+	if exists(mpDir) {
+		t.Errorf("marketplace clone stále existuje po odstranění posledního pluginu")
+	}
+}
+
 // fakeGitAuth implementuje GitAuthRunner pro tests bez skutečného gitu.
 type fakeGitAuth struct {
 	t             *testing.T

@@ -109,6 +109,57 @@ func patchSettingsForRecipe(doc *settingsDoc, recipe *PluginRecipe, snapshots ma
 	return nil
 }
 
+// deletePluginKeyFromSettings smaže pluginKey ze sekcí enabledPlugins a
+// pluginConfigs v settings.json. Slouží pro uninstall fallback, kdy nemáme
+// snapshots — best-effort cleanup, ne byte-equal restore.
+func deletePluginKeyFromSettings(doc *settingsDoc, pluginKey string) error {
+	for _, section := range []string{"enabledPlugins", "pluginConfigs"} {
+		current, err := readSubObject(doc.Sections[section])
+		if err != nil {
+			return fmt.Errorf("nelze parsovat sekci %s: %w", section, err)
+		}
+		if _, ok := current[pluginKey]; !ok {
+			continue
+		}
+		delete(current, pluginKey)
+		if len(current) == 0 {
+			delete(doc.Sections, section)
+			continue
+		}
+		encoded, err := marshalSubObject(current)
+		if err != nil {
+			return err
+		}
+		doc.Sections[section] = encoded
+	}
+	return nil
+}
+
+// deleteMarketplaceFromSettings smaže marketplaceName ze sekce
+// extraKnownMarketplaces. Volá se ve fallback uninstallu, když na marketplace
+// už neukazuje žádný plugin.
+func deleteMarketplaceFromSettings(doc *settingsDoc, marketplaceName string) error {
+	section := "extraKnownMarketplaces"
+	current, err := readSubObject(doc.Sections[section])
+	if err != nil {
+		return fmt.Errorf("nelze parsovat sekci %s: %w", section, err)
+	}
+	if _, ok := current[marketplaceName]; !ok {
+		return nil
+	}
+	delete(current, marketplaceName)
+	if len(current) == 0 {
+		delete(doc.Sections, section)
+		return nil
+	}
+	encoded, err := marshalSubObject(current)
+	if err != nil {
+		return err
+	}
+	doc.Sections[section] = encoded
+	return nil
+}
+
 // togglePluginInSettings překlopí enabledPlugins[pluginKey] na true/false.
 // Žádné snapshots — toggle je idempotentní operace, uninstall stejně všechno
 // odstraní podle původních recipe snapshots.
